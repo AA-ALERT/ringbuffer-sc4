@@ -9,6 +9,12 @@
 /* 15833 blocks of 4800 bytes corresponds to 1 second of 19-MHz data */
 /* 15625 blocks of 4800 bytes corresponds to 1 second of 18.75-MHz data */
 
+/* TODO:
+ * * remove as much of the free/alloc stuff as possible
+ * * see if nstreams can be assumed constant (or if there is a reasonable NSTREAMS_MAX)
+ * * use proper logging and get rid of the fflush
+ */
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,7 +77,7 @@ typedef struct {
   unsigned short nchannel; /* Number of frequency channels */
   unsigned short nblocks;  /* Number of blocks */
   unsigned long timestamp; /* Timestamp in units of 1/8000 s after Jan 1, 1970 at the beginning of the packet */
-  char *flags;             /* Flags */
+  char flags[25];          /* Flags */
   int lowband;             /* Value of the lowest band */
   int highband;            /* Value of the lowest band */
   int *allbands;           /* Value of all the bands */
@@ -172,7 +178,7 @@ void invert_bytes(char *string, char inverted[], int N)
     
 void read_applicationheader(char *ah, appheader_type *appheader)
 {
-  char inverted[999]; /* UNUSED: band[2], nchannel[2], nblocks[2], nseconds[4], nsamples[4] */
+  char inverted[999];
   // Read header and convert from big endian to little endian
   invert_bytes(&ah[2], inverted, 2);
   memcpy(&appheader->band, &inverted, 2);
@@ -207,13 +213,11 @@ void FixDroppedPackets(udp2db_t *udp2db, dada_hdu_t **hdu, int *lastbands, int n
 int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, int nstreams, unsigned long starttime, unsigned long *timestamps, FILE *logio)
 {
   int recread=0, i, max, min;
-  /* UNUSED: char ch; */
   socklen_t length;
   char **buf2d;
   int *original_bandorder;
-  char *application_header_string;
+  char application_header_string[PACKHEADER];
   
-  application_header_string = (char*) calloc(PACKHEADER, sizeof(char));  
   buf2d = Make2DArray_char(nstreams, PACKETSIZE); // make a 2D buffer, because we have to store all streams.
   original_bandorder = (int*) calloc(nstreams, sizeof(int));
 
@@ -259,7 +263,9 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
     fprintf(logio, "nstream = %d\n", nstreams);
     fprintf(logio, "Warning in fill_ringbuffer. Bandnumbers are not continuous.\n");
     fprintf(logio, "Bands are: ");
-    for (i=0; i<nstreams; i++) fprintf(logio, "%d\t", appheader->allbands[i]);
+    for (i=0; i<nstreams; i++) {
+      fprintf(logio, "%d\t", appheader->allbands[i]);
+    }
     fprintf(logio, "\n");
   }
   appheader->lowband = min;   // Copy the value of lowest band into the appheader
@@ -299,7 +305,6 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
   Free2DArray(buf2d, nstreams);
   fprintf(logio, "Read the first record.\n"); fflush(logio);
   free(original_bandorder);
-  free(application_header_string);
   return recread;
 }
 
@@ -308,13 +313,10 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
 int readpacket(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, unsigned long *timestamp, drop_type *drop, int record, int countband, int nstreams, FILE *logio)
 {
   int recread=0;
-  /* UNUSED char ch; */
   socklen_t length;
-  char *buf, *application_header_string; /* Made these variables global so that readpacket() doesn't need to allocate the memory every time */
+  char buf[PACKETSIZE];
+  char application_header_string[PACKHEADER];
   
-  buf = (char*) calloc(PACKETSIZE, sizeof(char));
-  application_header_string = (char*) calloc(PACKHEADER, sizeof(char));
-
   // Read the packet 
   recread = recvfrom(udp2db->sock, (void*) buf, PACKETSIZE, 0, (struct sockaddr *)&udp2db->sa, &length);
   if (recread < 0) {
@@ -356,8 +358,6 @@ int readpacket(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, un
     exit(EXIT_FAILURE);
   }
 
-  free(buf);
-  free(application_header_string);
   return recread;
 }
 
@@ -382,15 +382,15 @@ int NWords(const char sentence[ ])
 void Readkeys(char *keystring, keys_type *keys)
 {
   int i;
-  char *word; // Read the individual keys
-  word = (char*) calloc(999,sizeof(char));
+  char word[999]; // Read the individual keys
+
   keys->nkeys=NWords(keystring);
-  keys->array=(key_t*) calloc(keys->nkeys, sizeof(key_t)); //Allocate memeory for the array of keys
-  word=strtok(keystring, " ");        // Read they first key
-  sscanf(word, "%x", &keys->array[0]); // Copy the first key to the array
-  for (i=1; i<keys->nkeys; i++) {          // Loop over the remaining keys
-    word=strtok(NULL, " ");           // Read the next key
-    sscanf(word, "%x", &keys->array[i]);    // Copy the key to the array
+  keys->array=(key_t*) calloc(keys->nkeys, sizeof(key_t)); // Allocate memeory for the array of keys
+  word=strtok(keystring, " ");                             // Read they first key
+  sscanf(word, "%x", &keys->array[0]);                     // Copy the first key to the array
+  for (i=1; i<keys->nkeys; i++) {                          // Loop over the remaining keys
+    word=strtok(NULL, " ");                                // Read the next key
+    sscanf(word, "%x", &keys->array[i]);                   // Copy the key to the array
   }
 }
 
@@ -399,11 +399,12 @@ void Readheaders(char *headerstring, header_type *headers)
 {
   int i;
   headers->nheaders=NWords(headerstring);
-  headers->files=(char**) calloc(headers->nheaders, sizeof(char*)); //Allocate memeory for the header filenames
-  headers->files[0]=strtok(headerstring, " ");     // Read the first header
-  for (i=1; i<headers->nheaders; i++) {            // Loop over the remaining headers
-    headers->files[i]=strtok(NULL, " ");           // Read the next header
+  headers->files=(char**) calloc(headers->nheaders, sizeof(char*)); // Allocate memeory for the header filenames
+  headers->files[0]=strtok(headerstring, " ");                      // Read the first header
+  for (i=1; i<headers->nheaders; i++) {                             // Loop over the remaining headers
+    headers->files[i]=strtok(NULL, " ");                            // Read the next header
   }
+
   /* Set more parameters of the header */
   headers->strlen = (unsigned*) calloc(headers->nheaders, sizeof(unsigned));
   headers->buffers = (char**) calloc(headers->nheaders, sizeof(char*));
@@ -479,7 +480,6 @@ int main(int argc, char** argv)
   keys_type keys;
   header_type headers;
   appheader_type appheader;
-  /* UNUSED: int counter=0 */
   int nstreams;             // The number of headers = number of keys
   int duration;             // Duration of the observation in seconds
   long nrecs;               // Number of records / packets to read
@@ -489,7 +489,6 @@ int main(int argc, char** argv)
   unsigned long *timestamps; // Keep track of the timestamps from each band.
 
   drop.droppedpackets=0;    // Number of dropped packets
-  appheader.flags = (char*) calloc(25, sizeof(char)); // Allocate memory for the application header flags
   
   parseopts(argc, argv, headerstring, keystring, &starttime, &duration, &port, logfile); // Parse options
   logio = Sopen(logfile, "w"); // Open a logfile
@@ -641,7 +640,6 @@ int main(int argc, char** argv)
   free(headers.strlen);
   free(headers.buffers);
   free(headers.size);
-  free(appheader.flags);
   free(appheader.allbands);
   free(hdu);
   
