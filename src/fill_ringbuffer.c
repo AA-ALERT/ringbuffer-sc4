@@ -3,17 +3,12 @@
 /* Version 1.4 */
 /* Code can now handle non-continuous bands and missing packets*/
 /* Still debugging */
-/* Author: Roy Smits */
+/* Author: Roy Smits, Jisk Attema */
 
 /* Data comes in at 18.75 MHz in packages of 4800 bytes. */
 /* 15833 blocks of 4800 bytes corresponds to 1 second of 19-MHz data */
 /* 15625 blocks of 4800 bytes corresponds to 1 second of 18.75-MHz data */
 
-/* TODO:
- * * remove as much of the free/alloc stuff as possible
- * * see if nstreams can be assumed constant (or if there is a reasonable NSTREAMS_MAX)
- * * use proper logging and get rid of the fflush
- */
 
 #include <string.h>
 #include <stdio.h>
@@ -30,6 +25,12 @@
 #include "gsl/gsl_rng.h"
 #include "gsl/gsl_randist.h"
 
+#define MAX_STREAMS 64
+#define MAX_HEADERS 64
+#define MAX_KEYS    64
+#define MAX_STRLEN  256
+#define MAX_BANDS   16
+
 #define PACKETSIZE 4840           // Size of the packet, including the header in bytes
 #define RECSIZE 4800              // Size of the record = packet - header in bytes
 #define PACKHEADER 40             // Size of the packet header = PACKETSIZE-RECSIZE in bytes
@@ -43,74 +44,57 @@
 
 /* structures dmadb datatype  */
 typedef struct {
-  int verbose; /* verbosity flag */
-  long long nbufs; /* number of buffers to acquire */
+  int verbose;                             /* verbosity flag */
+  long long nbufs;                         /* number of buffers to acquire */
   long long prev_pkt_cnt, bad_pkt_cnt;
   int FirstFlag;
-  int fSize; /* file size of data */
-  int nSecs; /* number of seconds to acquire */
+  int fSize;                               /* file size of data */
+  int nSecs;                               /* number of seconds to acquire */
   long long buf;
-  char daemon; /*daemon mode */
+  char daemon;                             /* daemon mode */
   char *ObsId;
-  char *data;
-  char *dataFromPrevPkt;
+  char data[PACKETSIZE];
+  char dataFromPrevPkt[2 * PACKETSIZE];
   int markerOffset;
   int sock;
   struct sockaddr_in sa;
 } udp2db_t;
 
 typedef struct {
-  key_t *array; /* Array containing all the keys */
+  key_t array[MAX_KEYS];
   int nkeys;
 } keys_type;
 
 typedef struct {
-  unsigned *strlen;   /* The size of the header strings */
-  char **buffers;     /* Actual headers */ 
-  uint64_t *size;     /* Size of the buffer */
-  char **files;       /* All the filenames */
+  char *buffers[MAX_HEADERS];          /* Actual headers */ 
+  uint64_t size[MAX_HEADERS];          /* Size of the buffer */
+  char files[MAX_HEADERS][MAX_STRLEN]; /* All the filenames */
   int nheaders;
 } header_type;
 
 typedef struct {
-  unsigned short band;     /* Which band */
-  unsigned short nchannel; /* Number of frequency channels */
-  unsigned short nblocks;  /* Number of blocks */
-  unsigned long timestamp; /* Timestamp in units of 1/8000 s after Jan 1, 1970 at the beginning of the packet */
-  char flags[25];          /* Flags */
-  int lowband;             /* Value of the lowest band */
-  int highband;            /* Value of the lowest band */
-  int *allbands;           /* Value of all the bands */
-  int *allbands_index;     /* Store the index of each band */
+  unsigned short band;         /* Which band */
+  unsigned short nchannel;     /* Number of frequency channels */
+  unsigned short nblocks;      /* Number of blocks */
+  unsigned long timestamp;     /* Timestamp in units of 1/8000 s after Jan 1, 1970 at the beginning of the packet */
+  char flags[25];              /* Flags */
+  int lowband;                 /* Value of the lowest band */
+  int highband;                /* Value of the lowest band */
+  int allbands[MAX_STREAMS];   /* Value of all the bands */
+  int allbands_index[MAX_BANDS];/* Store the index of each band */
 } appheader_type;
 
 /* Structure related to findig and fixing dropped packets */
 typedef struct {
   unsigned long expectedtimestamp; /* The expected timestamp is the timestamp that is expected for the next packet */
-  int *lastbands;                  /* Keep track of the bands for which we have a packet from the current timesegment  */
+  int lastbands[MAX_STREAMS];      /* Keep track of the bands for which we have a packet from the current timesegment  */
   int droppedpackets;
   int droppednow;
   int lastband;                      /* In case a packet is dropped, we need to know which band we processed last time */
   unsigned long lastbandtimestamp;   /* The timestamp of the last band */
 } drop_type; 
 
-char** Make2DArray_char(int Size1, int Size2)
-{
-  char **Array;
-  int i;
-  Array = (char**) calloc(Size1,sizeof(char*));
-  for(i=0; i<Size1; i++)
-    Array[i] = (char*) calloc(Size2,sizeof(char));
-  return(Array);
-}
-
-void Free2DArray(char **Array, int Size)
-{
-  int i;
-  for(i=0; i<Size; i++)
-    free(Array[i]);
-  free(Array);
-}
+char buf2d[MAX_STREAMS][PACKETSIZE];
 
 /* Sesame Open. Opens file with proper check. */
 FILE* Sopen(char *Fin, char *how)
@@ -158,10 +142,6 @@ int init(udp2db_t* udp2db, int port)
     return -1;
   }
 
-  udp2db->data = malloc (PACKETSIZE*sizeof(char));
-  assert ( udp2db->data != 0 );
-  udp2db->dataFromPrevPkt = malloc (2*PACKETSIZE);
-  assert ( udp2db->dataFromPrevPkt != 0 );
   udp2db->markerOffset = 0;
   udp2db->bad_pkt_cnt = 0;
 
@@ -214,13 +194,9 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
 {
   int recread=0, i, max, min;
   socklen_t length;
-  char **buf2d;
-  int *original_bandorder;
+  int original_bandorder[MAX_STREAMS];
   char application_header_string[PACKHEADER];
   
-  buf2d = Make2DArray_char(nstreams, PACKETSIZE); // make a 2D buffer, because we have to store all streams.
-  original_bandorder = (int*) calloc(nstreams, sizeof(int));
-
   fprintf(logio, "Going to read first packets.\n"); fflush(logio);
 
   // Loop until we get to the starttimestamp
@@ -278,8 +254,6 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
   
   // Sort the bands and calculate the indices
   qsort(appheader->allbands, nstreams, sizeof(int), cmpint);
-  fprintf(logio, "Allocating %d ints for allbands_index\n", appheader->highband+1);
-  appheader->allbands_index = (int*) calloc(appheader->highband+1, sizeof(int));
   for (i=0; i<nstreams; i++)
     appheader->allbands_index[appheader->allbands[i]] = i;
   fprintf(logio, "The bands are: ");
@@ -302,9 +276,7 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
   }
   if (appheader->nblocks != NBLOCK) fprintf(logio, "Warning: number of blocks in packet is not equal to %d\n", NBLOCK);
 
-  Free2DArray(buf2d, nstreams);
   fprintf(logio, "Read the first record.\n"); fflush(logio);
-  free(original_bandorder);
   return recread;
 }
 
@@ -361,59 +333,38 @@ int readpacket(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, un
   return recread;
 }
 
-
-/* Count the number of words in a string */
-int NWords(const char sentence[ ])
-{
-  int counted = 0;
-  const char* it = sentence;
-  int inword = 0;
-  do switch(*it) {
-    case '\0': 
-    case ' ': case '\t': case '\n': case '\r':
-      if (inword) { inword = 0; counted++; }
-      break;
-    default: inword = 1;
-    } while(*it++);
-  return counted;
-}
-
 /* This routine will scan the keystring and extract the keys */
-void Readkeys(char *keystring, keys_type *keys)
+int Readkeys(char *keystring, keys_type *keys)
 {
-  int i;
-  char word[999]; // Read the individual keys
+  char *token;
+  int nkeys = 0;
 
-  keys->nkeys=NWords(keystring);
-  keys->array=(key_t*) calloc(keys->nkeys, sizeof(key_t)); // Allocate memeory for the array of keys
-  word=strtok(keystring, " ");                             // Read they first key
-  sscanf(word, "%x", &keys->array[0]);                     // Copy the first key to the array
-  for (i=1; i<keys->nkeys; i++) {                          // Loop over the remaining keys
-    word=strtok(NULL, " ");                                // Read the next key
-    sscanf(word, "%x", &keys->array[i]);                   // Copy the key to the array
+  token = strtok(keystring, " ");
+  while (token) {
+    // Copy the key to the array
+    sscanf(token, "%x", &(keys->array[nkeys]));
+    token = strtok(NULL, " ");
+    nkeys++;
   }
+  return nkeys;
 }
 
 /* This routine will scan the headerstring and extract the headers for the dada files */
-void Readheaders(char *headerstring, header_type *headers)
+int Readheaders(char *headerstring, header_type *headers)
 {
-  int i;
-  headers->nheaders=NWords(headerstring);
-  headers->files=(char**) calloc(headers->nheaders, sizeof(char*)); // Allocate memeory for the header filenames
-  headers->files[0]=strtok(headerstring, " ");                      // Read the first header
-  for (i=1; i<headers->nheaders; i++) {                             // Loop over the remaining headers
-    headers->files[i]=strtok(NULL, " ");                            // Read the next header
-  }
+  char *token;
+  int nheaders = 0;
 
-  /* Set more parameters of the header */
-  headers->strlen = (unsigned*) calloc(headers->nheaders, sizeof(unsigned));
-  headers->buffers = (char**) calloc(headers->nheaders, sizeof(char*));
-  headers->size = (uint64_t*) calloc(headers->nheaders, sizeof(uint64_t));
-  for (i=0; i<headers->nheaders; i++) {
-    headers->strlen[i] = 0;
-    headers->buffers[i] = 0;
-    headers->size[i] = 4096;
+  token = strtok(headerstring, " ");
+  while (token) {
+    strncpy(headers->files[nheaders], token, MAX_STRLEN);
+    headers->buffers[nheaders] = NULL;
+    headers->size[nheaders] = 4096;
+
+    token = strtok(NULL, " ");
+    nheaders++;
   }
+  return nheaders;
 }
 
 // Check if the nstream packets have identical timestamps.
@@ -465,7 +416,7 @@ int main(int argc, char** argv)
   udp2db_t udp2db;
 
   /* DADA header plus data */
-  dada_hdu_t **hdu;
+  dada_hdu_t *hdu[MAX_STREAMS];
   char *ObsId = "Test";
   char logfile[999]; // location of the logfile
   FILE* logio;
@@ -486,7 +437,7 @@ int main(int argc, char** argv)
   drop_type drop;           // Variable related to findig and fixing dropped packets
   unsigned long starttime;  // Starttime of the observation in units of 1/781250 seconds after 1970
   unsigned long endtime;    // Endtime of the observation in units of 1/781250 seconds after 1970
-  unsigned long *timestamps; // Keep track of the timestamps from each band.
+  unsigned long timestamps[MAX_STREAMS]; // Keep track of the timestamps from each band.
 
   drop.droppedpackets=0;    // Number of dropped packets
   
@@ -509,11 +460,6 @@ int main(int argc, char** argv)
     exit(EXIT_FAILURE);
   }
   nstreams=headers.nheaders; // nstreams is just the number of headers = number of keys
-  appheader.allbands = (int*) calloc(nstreams, sizeof(int)); // Allocate memory to store the bandnumbers in incremental order
-  hdu = (dada_hdu_t**) calloc(nstreams, sizeof(dada_hdu_t*));
-
-  timestamps = (unsigned long*) calloc(nstreams, sizeof(unsigned long)); // Allocate memory to store the timestamps from each band
-  drop.lastbands = (int*) calloc(nstreams, sizeof(int)); // Allocate memory to keep track of the bands from the current timesegment
 
   udp2db.verbose = verbose;
   udp2db.nbufs = nbufs;
@@ -636,12 +582,6 @@ int main(int argc, char** argv)
   fprintf(logio, "Closing socket.\n");
   
   close(udp2db.sock);
-  free(keys.array);
-  free(headers.strlen);
-  free(headers.buffers);
-  free(headers.size);
-  free(appheader.allbands);
-  free(hdu);
   
   fprintf(logio, "All Done.\n");
   printf("All Done.\n");
