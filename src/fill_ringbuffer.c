@@ -38,7 +38,6 @@
 #define HEADERFILE "header.txt"   // Name of the file containing the dadaheader
 #define RECSPERSECOND 15625       // Number of packets / records per second = 781250 * 24 * 4 / 4800
 #define NBLOCK 50                 // Number of data blocks in a packet / record, used to check the packet header
-#define MAXDROPPEDPACKETS 1000    // Maximum number of packets dropped before we stop reporting them
 #define SOCKBUFSIZE 33554432      // Buffer size of socket 
 
 
@@ -83,16 +82,6 @@ typedef struct {
   int allbands[MAX_STREAMS];   /* Value of all the bands */
   int allbands_index[MAX_BANDS];/* Store the index of each band */
 } appheader_type;
-
-/* Structure related to findig and fixing dropped packets */
-typedef struct {
-  unsigned long expectedtimestamp; /* The expected timestamp is the timestamp that is expected for the next packet */
-  int lastbands[MAX_STREAMS];      /* Keep track of the bands for which we have a packet from the current timesegment  */
-  int droppedpackets;
-  int droppednow;
-  int lastband;                      /* In case a packet is dropped, we need to know which band we processed last time */
-  unsigned long lastbandtimestamp;   /* The timestamp of the last band */
-} drop_type; 
 
 char buf2d[MAX_STREAMS][PACKETSIZE];
 
@@ -173,22 +162,6 @@ void read_applicationheader(char *ah, appheader_type *appheader)
   return;
 }
 
-// If a packet was dropped, replace it with current packet
-void FixDroppedPackets(udp2db_t *udp2db, dada_hdu_t **hdu, int *lastbands, int nstreams, FILE *logio)
-{
-  int i;
-  for (i=0; i<nstreams; i++) {
-    if (!lastbands[i]) { // If packet is missing copy record to shared memory
-      fprintf(logio, "Missing band %d at index %d\n", lastbands[i], i);
-      if ( (ipcio_write(hdu[i]->data_block, udp2db->data, RECSIZE) ) < RECSIZE){
-        fprintf(logio, "ERROR. Cannot write requested bytes to shared memory\n");
-        fclose(logio);
-        exit(EXIT_FAILURE);
-      }
-    }
-  }
-}
-
 /* Wait for the packet matching the timestamp and then read the first nstream packets to extract the packet information */
 int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, int nstreams, unsigned long starttime, unsigned long *timestamps, FILE *logio)
 {
@@ -197,10 +170,13 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
   int original_bandorder[MAX_STREAMS];
   char application_header_string[PACKHEADER];
   
-  fprintf(logio, "Going to read first packets.\n"); fflush(logio);
+  // fprintf(logio, "Going to read first packets.\n");
 
   // Loop until we get to the starttimestamp
-  do { // Read the packet
+  // ---------------------------------------
+ 
+  do {
+    // Read the packet
     recread = recvfrom(udp2db->sock, (void*) buf2d[0], PACKETSIZE, 0, (struct sockaddr *)&udp2db->sa, &length);
     if (recread < 0) {
       fprintf(logio, "error reading udp packet at initialization. recread = %d\n", recread);
@@ -212,8 +188,12 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
     appheader->allbands[0]=appheader->band;
     timestamps[0] = appheader->timestamp;
   }
-  while (appheader->timestamp < starttime); // End loop. Now we have the first packet after starttime in buf2d[]
-  fprintf(logio, "band 0: %d\n", appheader->allbands[0]);
+  while (appheader->timestamp < starttime);
+
+  // Now we have the first packet after starttime in buf2d[]
+  // -------------------------------------------------------
+
+  // fprintf(logio, "band 0: %d\n", appheader->allbands[0]);
 
   for (i=1; i<nstreams; i++) { // Read the remaining nstreams-1 packets
     recread = recvfrom(udp2db->sock, (void*) buf2d[i], PACKETSIZE, 0, (struct sockaddr *)&udp2db->sa, &length);
@@ -225,14 +205,18 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
     memcpy(application_header_string, buf2d[i], PACKHEADER); // Copy the application header to a string
     read_applicationheader(application_header_string, appheader); // Extract the application header from the string
     appheader->allbands[i]=appheader->band;
-    fprintf(logio, "band %d: %d\n", i, appheader->allbands[i]);
+    // fprintf(logio, "band %d: %d\n", i, appheader->allbands[i]);
     timestamps[i] = appheader->timestamp;
-  } // End for loop. Now we have the first nstream packets in buf2d[]
+  } 
+  
+  // Now we have the first nstream packets in buf2d[]
+  // ------------------------------------------------
 
   // Check the timestamp of the first packet
   if (timestamps[0] > starttime){
     fprintf(logio, "Warning! Timestamp in first packet is larger than given starttime (%ld > %ld).\n", appheader->timestamp, starttime);			     
   }
+
   // Check if bands are continuous
   MaxMin(appheader->allbands, nstreams, &max, &min);
   if (max-min+1 != nstreams) {
@@ -246,43 +230,49 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
   }
   appheader->lowband = min;   // Copy the value of lowest band into the appheader
   appheader->highband = max;  // Copy the value of highest band into the appheader
-  fprintf(logio, "band offset is %d\n", appheader->lowband);
+  // fprintf(logio, "band offset is %d\n", appheader->lowband);
 
   // Copy the original bandorder
-  for (i=0; i<nstreams; i++) 
+  for (i=0; i<nstreams; i++) {
     original_bandorder[i] = appheader->allbands[i];
+  }
   
   // Sort the bands and calculate the indices
   qsort(appheader->allbands, nstreams, sizeof(int), cmpint);
-  for (i=0; i<nstreams; i++)
+  for (i=0; i<nstreams; i++) {
     appheader->allbands_index[appheader->allbands[i]] = i;
-  fprintf(logio, "The bands are: ");
-  for (i=0; i<nstreams; i++)
-    fprintf(logio, "%d\t", appheader->allbands[i]);  
-  fprintf(logio, "\n");
-  fprintf(logio, "The index for these bands are: ");
-  for (i=0; i<nstreams; i++)
-    fprintf(logio, "%d\t", appheader->allbands_index[appheader->allbands[i]]);
-  fprintf(logio, "\n");
+  }
+
+  // fprintf(logio, "The bands are: ");
+  // for (i=0; i<nstreams; i++)
+  //   fprintf(logio, "%d\t", appheader->allbands[i]);  
+  // fprintf(logio, "\n");
+  // fprintf(logio, "The index for these bands are: ");
+  // for (i=0; i<nstreams; i++)
+  //   fprintf(logio, "%d\t", appheader->allbands_index[appheader->allbands[i]]);
+  // fprintf(logio, "\n");
 
   // Copy buffer into shared memory, skipping the PACKHEADER bytes of header
   for (i=0; i<nstreams; i++) { 
     memcpy(udp2db->data, &buf2d[i]+PACKHEADER, RECSIZE);
-    if ( (ipcio_write(hdu[appheader->allbands_index[original_bandorder[i]]]->data_block, udp2db->data, RECSIZE) ) < RECSIZE){
+    if ( (ipcio_write(hdu[appheader->allbands_index[original_bandorder[i]]]->data_block, udp2db->data, RECSIZE) ) < RECSIZE) {
       fprintf(logio, "ERROR. Cannot write requested bytes to SHM\n");
       fclose(logio);
       exit(EXIT_FAILURE);
     }
   }
-  if (appheader->nblocks != NBLOCK) fprintf(logio, "Warning: number of blocks in packet is not equal to %d\n", NBLOCK);
 
-  fprintf(logio, "Read the first record.\n"); fflush(logio);
+  if (appheader->nblocks != NBLOCK) {
+    fprintf(logio, "Warning: number of blocks in packet is not equal to %d\n", NBLOCK);
+  }
+
+  // fprintf(logio, "Read the first record.\n");
   return recread;
 }
 
 
 // Read one packet and copy it to the ringbuffer
-int readpacket(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, unsigned long *timestamp, drop_type *drop, int record, int countband, int nstreams, FILE *logio)
+int readpacket(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, unsigned long *timestamp, int record, int countband, int nstreams, FILE *logio)
 {
   int recread=0;
   socklen_t length;
@@ -299,29 +289,12 @@ int readpacket(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, un
   
   memcpy(application_header_string, buf, PACKHEADER);              /* Copy the application header to a string */
   read_applicationheader(application_header_string, appheader);    /* Extract the application header from the string */
-  drop->lastbands[appheader->allbands_index[appheader->band]] = 1; /* Keep track of bands that we have seen in this timesegment */
-  drop->lastband = appheader->band;
-  drop->lastbandtimestamp = appheader->timestamp;
 
   // Copy buffer into data, skipping the PACKHEADER bytes of header
   memcpy(udp2db->data, &buf[PACKHEADER], RECSIZE);
 
   // Check if timestamp is consistent with what is expected
   *timestamp = appheader->timestamp;
-  /* if (*timestamp != drop->expectedtimestamp) { 
-   *   if (drop->droppedpackets < MAXDROPPEDPACKETS) {
-   *     // Report dropped packet 
-   *     fprintf(logio, "Warning. Packet %d, band %d missed. Diff %ld\n", record, appheader->band, *timestamp-drop->expectedtimestamp);
-   *   }
-   *
-   *   // Number of packets that are dropped in this timesegment 
-   *   drop->droppednow = nstreams - countband;
-   *
-   *   // Count dropped packets 
-   *   drop->droppedpackets += drop->droppednow;
-   *   FixDroppedPackets(udp2db, hdu, drop->lastbands, nstreams, logio); 
-   * } 
-   */
 
   // Copy record to shared memory
   if ( (ipcio_write(hdu[appheader->allbands_index[appheader->band]]->data_block, udp2db->data, RECSIZE) ) < RECSIZE){
@@ -376,13 +349,6 @@ int checktimestamps(int n, unsigned long *timestamps)
   return 0;
 }
 
-// Clear the bands we have seen in the current timesegment
-void ClearLastbands(int n, int *bands)
-{
-  int i;
-  for (i=0; i<n; i++) bands[i] = 0;
-}
-
 void PrintOptions()
 {
   printf("usage: fill_ringbuffer -h <\"header files\"> -k <\"list of hexadecimal keys\"> -s <starttime (packets after 1970)> -d <duration (s)> -p <port> -l <logfile>\n");
@@ -434,13 +400,10 @@ int main(int argc, char** argv)
   int nstreams;             // The number of headers = number of keys
   int duration;             // Duration of the observation in seconds
   long nrecs;               // Number of records / packets to read
-  drop_type drop;           // Variable related to findig and fixing dropped packets
   unsigned long starttime;  // Starttime of the observation in units of 1/781250 seconds after 1970
   unsigned long endtime;    // Endtime of the observation in units of 1/781250 seconds after 1970
   unsigned long timestamps[MAX_STREAMS]; // Keep track of the timestamps from each band.
 
-  drop.droppedpackets=0;    // Number of dropped packets
-  
   parseopts(argc, argv, headerstring, keystring, &starttime, &duration, &port, logfile); // Parse options
   logio = Sopen(logfile, "w"); // Open a logfile
   fprintf(logio, "Messages from fill_ringbuffer\n\n");
@@ -449,11 +412,13 @@ int main(int argc, char** argv)
   fprintf(logio, "Starttime = %ld\n", starttime);
   fprintf(logio, "Endtime = %ld\n", endtime);
   fprintf(logio, "Going to read %ld records\n", nrecs);
-  fflush(logio);
+
+  /* read keys */
   Readkeys(keystring, &keys); // Read the keys.
 
-  /* Setup headers */
+  /* read headers */
   Readheaders(headerstring, &headers);
+
   if (headers.nheaders != keys.nkeys) {
     fprintf(logio, "ERROR: The number of headers do not match the number of keys\n");
     fclose(logio);
@@ -476,7 +441,6 @@ int main(int argc, char** argv)
     exit(EXIT_FAILURE);
   }
   fprintf(logio, "Initialisation done.\n");
-  fflush(logio);
 
   /* Create the header/data blocks */
   for (i=0; i<nstreams; i++) {
@@ -520,19 +484,16 @@ int main(int argc, char** argv)
     }
   }
   fprintf(logio, "Headers created.\n");
-  fflush(logio);
 
   /* First read all the bands once to get information from the packet headers */
   readfirstpackets(&udp2db, hdu, &appheader, nstreams, starttime, timestamps, logio);
 
   fprintf(logio, "Read first packets.\n");
-  fflush(logio);
 
   if (checktimestamps(nstreams, timestamps)) {
     fprintf(logio, "Warning: timestamps from record 0 are not identical!\n");
   }
   fprintf(logio, "Done checking timestamps.\n");
-  fflush(logio);  
 
   for (i=0; i<nstreams; i++) {
     fprintf(logio, "%ld\n", timestamps[i]);
@@ -540,45 +501,23 @@ int main(int argc, char** argv)
   
   /* Loop over all runs */
   fprintf(logio, "Reading and buffering.\n");
-  fflush(logio);
 
-  drop.droppednow=0;
   for (i=1; i<nrecs; i++) {                        // read from 1 to nrec records, because we already read number 0
-    drop.expectedtimestamp = timestamps[0]+NBLOCK; // The expected timestamp is the timestamp that is expected for the next packet
-    ClearLastbands(nstreams, drop.lastbands);      // Once we reach the next timesegment, reset the bands we have seen.
     for (j=0; j<nstreams; j++) {
-      if (drop.droppednow) {                                         // In case we dropped a packet last round, we need to set a few things right
-        drop.lastbands[appheader.allbands_index[drop.lastband]] = 1; // Mark the previous band as read
-        timestamps[0] = drop.lastbandtimestamp;                      // Set the timestamp of the first band to the correct value
-        if (nstreams > 1) {j++;}
-        drop.droppednow=0;
-      }
-      n = readpacket(&udp2db, hdu, &appheader, &timestamps[j], &drop, i, j, nstreams, logio);
-      fprintf(logio, "%ld\t", timestamps[j]-starttime);
-      fflush(logio);
+      n = readpacket(&udp2db, hdu, &appheader, &timestamps[j], i, j, nstreams, logio);
       if (n < 0) {
         fprintf(logio, "Warning, problem when reading record %d, stream %d\n", i, j);
-      }
-
-      // If we have dropped a packet, exit this loop so that we can start a fresh sequence.
-      if (drop.droppednow) {
-        break; 
+      } else {
+        fprintf(logio, "%ld\t", timestamps[j]-starttime); // FIXME: remove
       }
     }
-    fprintf(logio, "\n");
-    /* // Check if timestamps from all bands are identical
-     * if (checktimestamps(nstreams, timestamps)) {
-     *   fprintf(logio, "Warning: timestamps from record %d are not identical!\n", i);
-     * }
-     */
     if (timestamps[0] > endtime) { 
-      fprintf(logio, "Warning, end of observation occurred before all packets were read.\n"); fflush(logio);
+      fprintf(logio, "Warning, end of observation occurred before all packets were read.\n");
       fprintf(logio, "I have %d packets out of %ld, which corresponds to %f seconds.\n", i+1, nrecs, i/(float)RECSPERSECOND);
       break;
     }
   }
   
-  fprintf(logio, "Missed %d packets.\n", drop.droppedpackets);
   fprintf(logio, "Closing socket.\n");
   
   close(udp2db.sock);
