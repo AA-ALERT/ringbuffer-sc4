@@ -319,6 +319,7 @@ int Readkeys(char *keystring, keys_type *keys)
     token = strtok(NULL, " ");
     nkeys++;
   }
+  keys->nkeys = nkeys;
   return nkeys;
 }
 
@@ -337,6 +338,7 @@ int Readheaders(char *headerstring, header_type *headers)
     token = strtok(NULL, " ");
     nheaders++;
   }
+  headers->nheaders = nheaders;
   return nheaders;
 }
 
@@ -418,12 +420,16 @@ int main(int argc, char** argv)
 
   /* read headers */
   Readheaders(headerstring, &headers);
+  printf("Nheaders: %d\n",headers.nheaders);
 
   if (headers.nheaders != keys.nkeys) {
     fprintf(logio, "ERROR: The number of headers do not match the number of keys\n");
     fclose(logio);
     exit(EXIT_FAILURE);
+  } else {
+    fprintf(logio, "The number of headers and keys: %d\n", headers.nheaders);
   }
+
   nstreams=headers.nheaders; // nstreams is just the number of headers = number of keys
 
   udp2db.verbose = verbose;
