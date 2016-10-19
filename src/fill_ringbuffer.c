@@ -9,6 +9,8 @@
 /* 15833 blocks of 4800 bytes corresponds to 1 second of 19-MHz data */
 /* 15625 blocks of 4800 bytes corresponds to 1 second of 18.75-MHz data */
 
+// #define LOG(...) {fprintf(logio, __VA_ARGS__)}; 
+#define LOG(...) {fprintf(stdout, __VA_ARGS__); fflush(stdout); fflush(stderr);}
 
 #include <string.h>
 #include <stdio.h>
@@ -25,9 +27,9 @@
 #include "gsl/gsl_rng.h"
 #include "gsl/gsl_randist.h"
 
-#define MAX_STREAMS 64
-#define MAX_HEADERS 64
-#define MAX_KEYS    64
+#define MAX_STREAMS 16
+#define MAX_HEADERS 16
+#define MAX_KEYS    16
 #define MAX_STRLEN  256
 #define MAX_BANDS   16
 
@@ -60,15 +62,9 @@ typedef struct {
 } udp2db_t;
 
 typedef struct {
-  key_t array[MAX_KEYS];
-  int nkeys;
-} keys_type;
-
-typedef struct {
   char *buffers[MAX_HEADERS];          /* Actual headers */ 
   uint64_t size[MAX_HEADERS];          /* Size of the buffer */
   char files[MAX_HEADERS][MAX_STRLEN]; /* All the filenames */
-  int nheaders;
 } header_type;
 
 typedef struct {
@@ -91,7 +87,7 @@ FILE* Sopen(char *Fin, char *how)
   FILE *FileIn;
   if ((FileIn = fopen(Fin, how)) == NULL) 
   {
-    fprintf(stderr, "Error opening file %s\n", Fin);
+    LOG("Error opening file %s\n", Fin);
     exit(EXIT_FAILURE);
   }
   return(FileIn);
@@ -170,7 +166,7 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
   int original_bandorder[MAX_STREAMS];
   char application_header_string[PACKHEADER];
   
-  // fprintf(logio, "Going to read first packets.\n");
+  LOG("Going to read first packets.\n");
 
   // Loop until we get to the starttimestamp
   // ---------------------------------------
@@ -179,7 +175,7 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
     // Read the packet
     recread = recvfrom(udp2db->sock, (void*) buf2d[0], PACKETSIZE, 0, (struct sockaddr *)&udp2db->sa, &length);
     if (recread < 0) {
-      fprintf(logio, "error reading udp packet at initialization. recread = %d\n", recread);
+      LOG("error reading udp packet at initialization. recread = %d\n", recread);
       fclose(logio);
       exit(EXIT_FAILURE);
     }
@@ -193,19 +189,20 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
   // Now we have the first packet after starttime in buf2d[]
   // -------------------------------------------------------
 
-  // fprintf(logio, "band 0: %d\n", appheader->allbands[0]);
+  LOG("band 0: %d\n", appheader->allbands[0]);
 
   for (i=1; i<nstreams; i++) { // Read the remaining nstreams-1 packets
     recread = recvfrom(udp2db->sock, (void*) buf2d[i], PACKETSIZE, 0, (struct sockaddr *)&udp2db->sa, &length);
     if (recread < 0) {
-      fprintf(logio, "error reading udp packet at initialization. recread = %d\n", recread);
+      LOG("error reading udp packet at initialization. recread = %d\n", recread);
+      perror("recvfrom returned");
       fclose(logio);
       exit(EXIT_FAILURE);
     }
     memcpy(application_header_string, buf2d[i], PACKHEADER); // Copy the application header to a string
     read_applicationheader(application_header_string, appheader); // Extract the application header from the string
     appheader->allbands[i]=appheader->band;
-    // fprintf(logio, "band %d: %d\n", i, appheader->allbands[i]);
+    LOG("band %d: %d\n", i, appheader->allbands[i]);
     timestamps[i] = appheader->timestamp;
   } 
   
@@ -214,23 +211,23 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
 
   // Check the timestamp of the first packet
   if (timestamps[0] > starttime){
-    fprintf(logio, "Warning! Timestamp in first packet is larger than given starttime (%ld > %ld).\n", appheader->timestamp, starttime);			     
+    LOG("Warning! Timestamp in first packet is larger than given starttime (%ld > %ld).\n", appheader->timestamp, starttime);			     
   }
 
   // Check if bands are continuous
   MaxMin(appheader->allbands, nstreams, &max, &min);
   if (max-min+1 != nstreams) {
-    fprintf(logio, "nstream = %d\n", nstreams);
-    fprintf(logio, "Warning in fill_ringbuffer. Bandnumbers are not continuous.\n");
-    fprintf(logio, "Bands are: ");
+    LOG("nstream = %d\n", nstreams);
+    LOG("Warning in fill_ringbuffer. Bandnumbers are not continuous.\n");
+    LOG("Bands are: ");
     for (i=0; i<nstreams; i++) {
-      fprintf(logio, "%d\t", appheader->allbands[i]);
+      LOG("%d\t", appheader->allbands[i]);
     }
-    fprintf(logio, "\n");
+    LOG("\n");
   }
   appheader->lowband = min;   // Copy the value of lowest band into the appheader
   appheader->highband = max;  // Copy the value of highest band into the appheader
-  // fprintf(logio, "band offset is %d\n", appheader->lowband);
+  LOG("band offset is %d\n", appheader->lowband);
 
   // Copy the original bandorder
   for (i=0; i<nstreams; i++) {
@@ -243,30 +240,31 @@ int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *apphead
     appheader->allbands_index[appheader->allbands[i]] = i;
   }
 
-  // fprintf(logio, "The bands are: ");
-  // for (i=0; i<nstreams; i++)
-  //   fprintf(logio, "%d\t", appheader->allbands[i]);  
-  // fprintf(logio, "\n");
-  // fprintf(logio, "The index for these bands are: ");
-  // for (i=0; i<nstreams; i++)
-  //   fprintf(logio, "%d\t", appheader->allbands_index[appheader->allbands[i]]);
-  // fprintf(logio, "\n");
+  LOG("The bands are: ");
+  for (i=0; i<nstreams; i++)
+    LOG("%d\t", appheader->allbands[i]);  
+  LOG("\n");
+  LOG("The index for these bands are: ");
+  for (i=0; i<nstreams; i++)
+    LOG("%d\t", appheader->allbands_index[appheader->allbands[i]]);
+  LOG("\n");
 
   // Copy buffer into shared memory, skipping the PACKHEADER bytes of header
   for (i=0; i<nstreams; i++) { 
     memcpy(udp2db->data, &buf2d[i]+PACKHEADER, RECSIZE);
     if ( (ipcio_write(hdu[appheader->allbands_index[original_bandorder[i]]]->data_block, udp2db->data, RECSIZE) ) < RECSIZE) {
-      fprintf(logio, "ERROR. Cannot write requested bytes to SHM\n");
+      LOG("ERROR. Cannot write requested bytes to SHM\n");
       fclose(logio);
       exit(EXIT_FAILURE);
     }
   }
 
   if (appheader->nblocks != NBLOCK) {
-    fprintf(logio, "Warning: number of blocks in packet is not equal to %d\n", NBLOCK);
+    LOG("Warning: number of blocks in packet is not equal to %d\n", NBLOCK);
   }
 
-  // fprintf(logio, "Read the first record.\n");
+  LOG("Read the first record.\n");
+  fflush(logio);
   return recread;
 }
 
@@ -276,29 +274,30 @@ int readpacket(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, un
 {
   int recread=0;
   socklen_t length;
-  char buf[PACKETSIZE];
   char application_header_string[PACKHEADER];
   
   // Read the packet 
-  recread = recvfrom(udp2db->sock, (void*) buf, PACKETSIZE, 0, (struct sockaddr *)&udp2db->sa, &length);
+  recread = recvfrom(udp2db->sock, (void*) buf2d[0], PACKETSIZE, 0, (struct sockaddr *)&udp2db->sa, &length);
   if (recread < 0) {
-    fprintf(logio, "ERROR reading udp packet. recread = %d\n", recread);
+    LOG("ERROR reading udp packet. recread = %d\n", recread);
+    perror("recvfrom returned");
+    fclose(logio);
     exit(0);
     return 0;
   }
   
-  memcpy(application_header_string, buf, PACKHEADER);              /* Copy the application header to a string */
+  memcpy(application_header_string, (void *)buf2d[0], PACKHEADER); /* Copy the application header to a string */
   read_applicationheader(application_header_string, appheader);    /* Extract the application header from the string */
 
   // Copy buffer into data, skipping the PACKHEADER bytes of header
-  memcpy(udp2db->data, &buf[PACKHEADER], RECSIZE);
+  memcpy(udp2db->data, (void *) &buf2d[0][PACKHEADER], RECSIZE);
 
   // Check if timestamp is consistent with what is expected
   *timestamp = appheader->timestamp;
 
   // Copy record to shared memory
   if ( (ipcio_write(hdu[appheader->allbands_index[appheader->band]]->data_block, udp2db->data, RECSIZE) ) < RECSIZE){
-    fprintf(logio, "ERROR. Cannot write requested bytes to shared memory\n");
+    LOG("ERROR. Cannot write requested bytes to shared memory\n");
     fclose(logio);
     exit(EXIT_FAILURE);
   }
@@ -307,19 +306,21 @@ int readpacket(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, un
 }
 
 /* This routine will scan the keystring and extract the keys */
-int Readkeys(char *keystring, keys_type *keys)
+int Readkeys(char *keystring, key_t *keys)
 {
   char *token;
   int nkeys = 0;
 
+  LOG("Reading keys from %s\n", keystring);
   token = strtok(keystring, " ");
+
   while (token) {
     // Copy the key to the array
-    sscanf(token, "%x", &(keys->array[nkeys]));
+    sscanf(token, "%x", &(keys[nkeys]));
+    LOG("%i\n", keys[nkeys]);
     token = strtok(NULL, " ");
     nkeys++;
   }
-  keys->nkeys = nkeys;
   return nkeys;
 }
 
@@ -329,7 +330,9 @@ int Readheaders(char *headerstring, header_type *headers)
   char *token;
   int nheaders = 0;
 
+  LOG("Reading headers from %s\n", headerstring);
   token = strtok(headerstring, " ");
+
   while (token) {
     strncpy(headers->files[nheaders], token, MAX_STRLEN);
     headers->buffers[nheaders] = NULL;
@@ -338,7 +341,6 @@ int Readheaders(char *headerstring, header_type *headers)
     token = strtok(NULL, " ");
     nheaders++;
   }
-  headers->nheaders = nheaders;
   return nheaders;
 }
 
@@ -396,8 +398,13 @@ int main(int argc, char** argv)
   char writemode='W'; /* Needs to be a capital! */
   char headerstring[9999], keystring[999]; // read the arguments headerstring and keystring 
   multilog_t* log = multilog_open("fill_ringbuffer", 0);
-  keys_type keys;
+
+  key_t keys[MAX_KEYS];
+  int nkeys;
+
   header_type headers;
+  int nheaders;
+
   appheader_type appheader;
   int nstreams;             // The number of headers = number of keys
   int duration;             // Duration of the observation in seconds
@@ -408,29 +415,29 @@ int main(int argc, char** argv)
 
   parseopts(argc, argv, headerstring, keystring, &starttime, &duration, &port, logfile); // Parse options
   logio = Sopen(logfile, "w"); // Open a logfile
-  fprintf(logio, "Messages from fill_ringbuffer\n\n");
+  LOG("Messages from fill_ringbuffer\n\n");
   nrecs = RECSPERSECOND * duration; // Number of records to read
   endtime = starttime + nrecs*NBLOCK;
-  fprintf(logio, "Starttime = %ld\n", starttime);
-  fprintf(logio, "Endtime = %ld\n", endtime);
-  fprintf(logio, "Going to read %ld records\n", nrecs);
+  LOG("Starttime = %ld\n", starttime);
+  LOG("Endtime = %ld\n", endtime);
+  LOG("Going to read %ld records\n", nrecs);
 
   /* read keys */
-  Readkeys(keystring, &keys); // Read the keys.
+  nkeys = Readkeys(keystring, keys); // Read the keys.
 
   /* read headers */
-  Readheaders(headerstring, &headers);
-  printf("Nheaders: %d\n",headers.nheaders);
+  nheaders = Readheaders(headerstring, &headers);
+  printf("Nheaders: %d\n", nheaders);
 
-  if (headers.nheaders != keys.nkeys) {
-    fprintf(logio, "ERROR: The number of headers do not match the number of keys\n");
+  if (nheaders != nkeys) {
+    LOG("ERROR: The number of headers do not match the number of keys\n");
     fclose(logio);
     exit(EXIT_FAILURE);
   } else {
-    fprintf(logio, "The number of headers and keys: %d\n", headers.nheaders);
+    LOG("The number of headers and keys: %d\n", nheaders);
   }
 
-  nstreams=headers.nheaders; // nstreams is just the number of headers = number of keys
+  nstreams = nheaders; // nstreams is just the number of headers = number of keys
 
   udp2db.verbose = verbose;
   udp2db.nbufs = nbufs;
@@ -440,95 +447,112 @@ int main(int argc, char** argv)
   udp2db.ObsId = ObsId;
   udp2db.FirstFlag = 0;
   
-  fprintf(logio, "Going to initialise sockets...\n");
+  LOG("Going to initialise sockets...\n");
   if (init(&udp2db, port) < 0) {
-    fprintf(logio, "Unable to initialise.\n");
+    LOG("Unable to initialise.\n");
     fclose(logio);
     exit(EXIT_FAILURE);
   }
-  fprintf(logio, "Initialisation done.\n");
+  LOG("Initialisation done.\n");
 
   /* Create the header/data blocks */
   for (i=0; i<nstreams; i++) {
+    LOG("Stream %i\n", i);
+
+    LOG("Creating hdu\n");
     hdu[i] = dada_hdu_create (log);
-    dada_hdu_set_key(hdu[i], keys.array[i]);
+
+    LOG("Setting key hdu stream=%i key=%x\n", i, keys[i]);
+    dada_hdu_set_key(hdu[i], keys[i]);
+
+    LOG("Connecting\n");
     if (dada_hdu_connect (hdu[i]) < 0) {
-      fprintf(logio, "ERROR in dada_hdu_connect\n");
+      LOG("ERROR in dada_hdu_connect for stream %i key %x, error: %i\n", i, keys[i], errno);
       fclose(logio);
       exit(EXIT_FAILURE);
     }
 
     /* Make data buffers readable */
+    LOG("Make data buffers readable\n");
     if (dada_hdu_lock_write_spec (hdu[i],writemode) < 0) {
-      fprintf(logio, "ERROR in dada_hdu_lock_write_spec\n");
+      LOG("ERROR in dada_hdu_lock_write_spec\n");
       fclose(logio);
       return EXIT_FAILURE;
       exit(EXIT_FAILURE);
     }
 
     /* Set headers */
+    LOG("Set headers\n");
+
+    LOG("..ipcbuf_get_bufsz\n");
     headers.size[i] = ipcbuf_get_bufsz (hdu[i]->header_block);
+
+    LOG("..ipcbuf_get_next_write\n");
     headers.buffers[i] = ipcbuf_get_next_write (hdu[i]->header_block);
     if (!headers.buffers[i]) {
-      fprintf(logio, "ERROR. Get next header block error.\n");
+      LOG("ERROR. Get next header block error.\n");
       fclose(logio);
       exit(EXIT_FAILURE);
     }
 
     /* Read header */
+    LOG("Read header\n");
     if (fileread (headers.files[i], headers.buffers[i], headers.size[i]) < 0) {
-      fprintf(logio, "ERROR. Cannot read header from %s\n", headers.files[i]);
+      LOG("ERROR. Cannot read header from %s\n", headers.files[i]);
       fclose(logio);
       exit(EXIT_FAILURE);
     }
 
     /* Mark filled */
+    LOG("Mark filled\n");
     if (ipcbuf_mark_filled (hdu[i]->header_block, headers.size[i]) < 0) {
-      fprintf(logio, "ERROR. Could not mark filled header block\n");
+      LOG("ERROR. Could not mark filled header block\n");
       fclose(logio);
       exit(EXIT_FAILURE);
     }
   }
-  fprintf(logio, "Headers created.\n");
+  LOG("Headers created.\n");
 
   /* First read all the bands once to get information from the packet headers */
-  readfirstpackets(&udp2db, hdu, &appheader, nstreams, starttime, timestamps, logio);
+  readfirstpackets(&udp2db, &hdu, &appheader, nstreams, starttime, timestamps, logio);
 
-  fprintf(logio, "Read first packets.\n");
+  LOG("Read first packets.\n");
 
   if (checktimestamps(nstreams, timestamps)) {
-    fprintf(logio, "Warning: timestamps from record 0 are not identical!\n");
+    LOG("Warning: timestamps from record 0 are not identical!\n");
+    exit(0);
   }
-  fprintf(logio, "Done checking timestamps.\n");
+  LOG("Done checking timestamps.\n");
 
   for (i=0; i<nstreams; i++) {
-    fprintf(logio, "%ld\n", timestamps[i]);
+    LOG("%ld\n", timestamps[i]);
   }
   
   /* Loop over all runs */
-  fprintf(logio, "Reading and buffering.\n");
+  LOG("Reading and buffering.\n");
 
   for (i=1; i<nrecs; i++) {                        // read from 1 to nrec records, because we already read number 0
     for (j=0; j<nstreams; j++) {
-      n = readpacket(&udp2db, hdu, &appheader, &timestamps[j], i, j, nstreams, logio);
+      n = readpacket(&udp2db, &hdu, &appheader, &timestamps[j], i, j, nstreams, logio);
       if (n < 0) {
-        fprintf(logio, "Warning, problem when reading record %d, stream %d\n", i, j);
+        LOG("Warning, problem when reading record %d, stream %d\n", i, j);
       } else {
-        fprintf(logio, "%ld\t", timestamps[j]-starttime); // FIXME: remove
+        LOG("%ld\t", timestamps[j]-starttime); // FIXME: remove
       }
     }
+    LOG("\n");
     if (timestamps[0] > endtime) { 
-      fprintf(logio, "Warning, end of observation occurred before all packets were read.\n");
-      fprintf(logio, "I have %d packets out of %ld, which corresponds to %f seconds.\n", i+1, nrecs, i/(float)RECSPERSECOND);
+      LOG("Warning, end of observation occurred before all packets were read.\n");
+      LOG("I have %d packets out of %ld, which corresponds to %f seconds.\n", i+1, nrecs, i/(float)RECSPERSECOND);
       break;
     }
   }
   
-  fprintf(logio, "Closing socket.\n");
+  LOG("Closing socket.\n");
   
   close(udp2db.sock);
   
-  fprintf(logio, "All Done.\n");
+  LOG("All Done.\n");
   printf("All Done.\n");
   fclose(logio);
   multilog_close(log);  
