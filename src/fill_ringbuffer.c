@@ -1,560 +1,405 @@
-/* Program to read from the port and write to the ringbuffer */
-/* Last edit 07 Sep 2016 */
-/* Version 1.4 */
-/* Code can now handle non-continuous bands and missing packets*/
-/* Still debugging */
-/* Author: Roy Smits, Jisk Attema */
-
-/* Data comes in at 18.75 MHz in packages of 4800 bytes. */
-/* 15833 blocks of 4800 bytes corresponds to 1 second of 19-MHz data */
-/* 15625 blocks of 4800 bytes corresponds to 1 second of 18.75-MHz data */
-
-// #define LOG(...) {fprintf(logio, __VA_ARGS__)}; 
-#define LOG(...) {fprintf(stdout, __VA_ARGS__); fflush(stdout); fflush(stderr);}
-
+/**
+ * Program to read from the port and write to the ringbuffer 
+ * Author: Jisk Attema, based on code by Roy Smits
+ *
+ */
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
-#include <futils.h>
-#include "udp.h"
-#include "dada_hdu.h"
-#include "dada_def.h"
-#include "dada_pwc_main.h"
-#include "assert.h"
-#include "multilog.h"
+#include <unistd.h>
 #include <getopt.h>
-#include "gsl/gsl_rng.h"
-#include "gsl/gsl_randist.h"
+#include <netinet/in.h>
+#include <byteswap.h>
 
-#define MAX_STREAMS 16
-#define MAX_HEADERS 16
-#define MAX_KEYS    16
-#define MAX_STRLEN  256
-#define MAX_BANDS   16
+#include "dada_hdu.h"
+#include "futils.h"
 
 #define PACKETSIZE 4840           // Size of the packet, including the header in bytes
-#define RECSIZE 4800              // Size of the record = packet - header in bytes
-#define PACKHEADER 40             // Size of the packet header = PACKETSIZE-RECSIZE in bytes
-#define HEADERSIZE 4096           // Side of the dada header
-#define HEADERFILE "header.txt"   // Name of the file containing the dadaheader
+#define RECORDSIZE 4800           // Size of the record = packet - header in bytes
+#define PACKHEADER 40             // Size of the packet header = PACKETSIZE-RECORDSIZE in bytes
+
+#define MAX_STREAMS 16
+#define MAX_BANDS   16
+#define SOCKBUFSIZE 33554432      // Buffer size of socket
 #define RECSPERSECOND 15625       // Number of packets / records per second = 781250 * 24 * 4 / 4800
-#define NBLOCK 50                 // Number of data blocks in a packet / record, used to check the packet header
-#define SOCKBUFSIZE 33554432      // Buffer size of socket 
+#define NBLOCKS 50                // Number of data blocks in a packet / record, used to check the packet header
 
-
-/* structures dmadb datatype  */
+/*
+ * Packet header values are stored big endian
+ * Bytes length    description
+ * 01-02  2
+ * 02-03  2        band
+ * 04-05  2        nchannel
+ * 06-07  2        nblocks
+ * 08-15  8        timestamp
+ * 16-40 24        flags
+ *  <4800 bytes of RECORDS> 
+ */
 typedef struct {
-  int verbose;                             /* verbosity flag */
-  long long nbufs;                         /* number of buffers to acquire */
-  long long prev_pkt_cnt, bad_pkt_cnt;
-  int FirstFlag;
-  int fSize;                               /* file size of data */
-  int nSecs;                               /* number of seconds to acquire */
-  long long buf;
-  char daemon;                             /* daemon mode */
-  char *ObsId;
-  char data[PACKETSIZE];
-  char dataFromPrevPkt[2 * PACKETSIZE];
-  int markerOffset;
-  int sock;
-  struct sockaddr_in sa;
-} udp2db_t;
+  unsigned short unused_A;
+  unsigned short band;
+  unsigned short channel;
+  unsigned short nblocks;
+  unsigned long  timestamp;
+  unsigned long flags[3];
+  char record[4800];
+} packet_t;
 
-typedef struct {
-  char *buffers[MAX_HEADERS];          /* Actual headers */ 
-  uint64_t size[MAX_HEADERS];          /* Size of the buffer */
-  char files[MAX_HEADERS][MAX_STRLEN]; /* All the filenames */
-} header_type;
+/**
+ * Data comes in at 18.75 MHz in packages of 4800 bytes:
+ * 15833 blocks of 4800 bytes corresponds to 1 second of 19-MHz data
+ * 15625 blocks of 4800 bytes corresponds to 1 second of 18.75-MHz data
+ */
 
-typedef struct {
-  unsigned short band;         /* Which band */
-  unsigned short nchannel;     /* Number of frequency channels */
-  unsigned short nblocks;      /* Number of blocks */
-  unsigned long timestamp;     /* Timestamp in units of 1/8000 s after Jan 1, 1970 at the beginning of the packet */
-  char flags[25];              /* Flags */
-  int lowband;                 /* Value of the lowest band */
-  int highband;                /* Value of the lowest band */
-  int allbands[MAX_STREAMS];   /* Value of all the bands */
-  int allbands_index[MAX_BANDS];/* Store the index of each band */
-} appheader_type;
-
-char buf2d[MAX_STREAMS][PACKETSIZE];
-
-/* Sesame Open. Opens file with proper check. */
-FILE* Sopen(char *Fin, char *how)
-{
-  FILE *FileIn;
-  if ((FileIn = fopen(Fin, how)) == NULL) 
-  {
-    LOG("Error opening file %s\n", Fin);
-    exit(EXIT_FAILURE);
-  }
-  return(FileIn);
-}
-
-int cmpint(const void *v1, const void *v2)
-{
-  return ( *(int*)v1 - *(int*)v2 );
-}
-
-/* Function to find max and min of an int data set */
-void MaxMin(int *a, int na, int *amax, int *amin)
-{
-  int i;
-  *amax  = a[0];
-  *amin  = *amax;
-  for(i=0;i<na;i++) {
-    if (*amin>a[i]) *amin = a[i];
-    if (*amax<a[i]) *amax = a[i];
-  }
-  return;
-}
-
-int init(udp2db_t* udp2db, int port)
-{
-  int sockbufsize=SOCKBUFSIZE;
-  udp2db->sock = socket(AF_INET, SOCK_DGRAM, 0); 
-  setsockopt(udp2db->sock, SOL_SOCKET, SO_RCVBUF, &sockbufsize, sizeof(sockbufsize)); // Set socket buffer size
-  memset(&udp2db->sa, 0, sizeof(udp2db->sa));
-  udp2db->sa.sin_family = AF_UNSPEC;
-  udp2db->sa.sin_addr.s_addr = htonl(INADDR_ANY);
-  udp2db->sa.sin_port = htons(port);
-
-  if (-1 == bind(udp2db->sock, (struct sockaddr *)&udp2db->sa, sizeof (udp2db->sa))){
-    perror("bind failed");
-    close(udp2db->sock);
-    return -1;
-  }
-
-  udp2db->markerOffset = 0;
-  udp2db->bad_pkt_cnt = 0;
-
-  return 0;
-}
-
-/* Invert a string of length N. Make sure inverted is large enough. */
-void invert_bytes(char *string, char inverted[], int N)
-{
-  int i;
-  for (i=0; i<N; i++)
-    inverted[N-1-i]=string[i];
-}
-    
-void read_applicationheader(char *ah, appheader_type *appheader)
-{
-  char inverted[999];
-  // Read header and convert from big endian to little endian
-  invert_bytes(&ah[2], inverted, 2);
-  memcpy(&appheader->band, &inverted, 2);
-  invert_bytes(&ah[4], inverted, 2);
-  memcpy(&appheader->nchannel, &inverted, 2);
-  invert_bytes(&ah[6], inverted, 2);
-  memcpy(&appheader->nblocks, &inverted, 2);
-  invert_bytes(&ah[8], inverted, 8);
-  memcpy(&appheader->timestamp, &inverted, 8);
-  //  invert_bytes(&ah[16], inverted, 24);
-  //  memcpy(&appheader->flags, &inverted, 24);
-  return;
-}
-
-/* Wait for the packet matching the timestamp and then read the first nstream packets to extract the packet information */
-int readfirstpackets(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, int nstreams, unsigned long starttime, unsigned long *timestamps, FILE *logio)
-{
-  int recread=0, i, max, min;
-  socklen_t length;
-  int original_bandorder[MAX_STREAMS];
-  char application_header_string[PACKHEADER];
-  
-  LOG("Going to read first packets.\n");
-
-  // Loop until we get to the starttimestamp
-  // ---------------------------------------
- 
-  do {
-    // Read the packet
-    recread = recvfrom(udp2db->sock, (void*) buf2d[0], PACKETSIZE, 0, (struct sockaddr *)&udp2db->sa, &length);
-    if (recread < 0) {
-      LOG("error reading udp packet at initialization. recread = %d\n", recread);
-      fclose(logio);
-      exit(EXIT_FAILURE);
-    }
-    memcpy(application_header_string, buf2d[0], PACKHEADER); // Copy the application header to a string
-    read_applicationheader(application_header_string, appheader); // Extract the application header from the string
-    appheader->allbands[0]=appheader->band;
-    timestamps[0] = appheader->timestamp;
-  }
-  while (appheader->timestamp < starttime);
-
-  // Now we have the first packet after starttime in buf2d[]
-  // -------------------------------------------------------
-
-  LOG("band 0: %d\n", appheader->allbands[0]);
-
-  for (i=1; i<nstreams; i++) { // Read the remaining nstreams-1 packets
-    recread = recvfrom(udp2db->sock, (void*) buf2d[i], PACKETSIZE, 0, (struct sockaddr *)&udp2db->sa, &length);
-    if (recread < 0) {
-      LOG("error reading udp packet at initialization. recread = %d\n", recread);
-      perror("recvfrom returned");
-      fclose(logio);
-      exit(EXIT_FAILURE);
-    }
-    memcpy(application_header_string, buf2d[i], PACKHEADER); // Copy the application header to a string
-    read_applicationheader(application_header_string, appheader); // Extract the application header from the string
-    appheader->allbands[i]=appheader->band;
-    LOG("band %d: %d\n", i, appheader->allbands[i]);
-    timestamps[i] = appheader->timestamp;
-  } 
-  
-  // Now we have the first nstream packets in buf2d[]
-  // ------------------------------------------------
-
-  // Check the timestamp of the first packet
-  if (timestamps[0] > starttime){
-    LOG("Warning! Timestamp in first packet is larger than given starttime (%ld > %ld).\n", appheader->timestamp, starttime);			     
-  }
-
-  // Check if bands are continuous
-  MaxMin(appheader->allbands, nstreams, &max, &min);
-  if (max-min+1 != nstreams) {
-    LOG("nstream = %d\n", nstreams);
-    LOG("Warning in fill_ringbuffer. Bandnumbers are not continuous.\n");
-    LOG("Bands are: ");
-    for (i=0; i<nstreams; i++) {
-      LOG("%d\t", appheader->allbands[i]);
-    }
-    LOG("\n");
-  }
-  appheader->lowband = min;   // Copy the value of lowest band into the appheader
-  appheader->highband = max;  // Copy the value of highest band into the appheader
-  LOG("band offset is %d\n", appheader->lowband);
-
-  // Copy the original bandorder
-  for (i=0; i<nstreams; i++) {
-    original_bandorder[i] = appheader->allbands[i];
-  }
-  
-  // Sort the bands and calculate the indices
-  qsort(appheader->allbands, nstreams, sizeof(int), cmpint);
-  for (i=0; i<nstreams; i++) {
-    appheader->allbands_index[appheader->allbands[i]] = i;
-  }
-
-  LOG("The bands are: ");
-  for (i=0; i<nstreams; i++)
-    LOG("%d\t", appheader->allbands[i]);  
-  LOG("\n");
-  LOG("The index for these bands are: ");
-  for (i=0; i<nstreams; i++)
-    LOG("%d\t", appheader->allbands_index[appheader->allbands[i]]);
-  LOG("\n");
-
-  // Copy buffer into shared memory, skipping the PACKHEADER bytes of header
-  for (i=0; i<nstreams; i++) { 
-    memcpy(udp2db->data, &buf2d[i]+PACKHEADER, RECSIZE);
-    if ( (ipcio_write(hdu[appheader->allbands_index[original_bandorder[i]]]->data_block, udp2db->data, RECSIZE) ) < RECSIZE) {
-      LOG("ERROR. Cannot write requested bytes to SHM\n");
-      fclose(logio);
-      exit(EXIT_FAILURE);
-    }
-  }
-
-  if (appheader->nblocks != NBLOCK) {
-    LOG("Warning: number of blocks in packet is not equal to %d\n", NBLOCK);
-  }
-
-  LOG("Read the first record.\n");
-  fflush(logio);
-  return recread;
-}
+// #define LOG(...) {fprintf(logio, __VA_ARGS__)}; 
+#define LOG(...) {fprintf(stdout, __VA_ARGS__); fflush(stdout); fflush(stderr);}
 
 
-// Read one packet and copy it to the ringbuffer
-int readpacket(udp2db_t *udp2db, dada_hdu_t **hdu, appheader_type *appheader, unsigned long *timestamp, int record, int countband, int nstreams, FILE *logio)
-{
-  int recread=0;
-  socklen_t length;
-  char application_header_string[PACKHEADER];
-  
-  // Read the packet 
-  recread = recvfrom(udp2db->sock, (void*) buf2d[0], PACKETSIZE, 0, (struct sockaddr *)&udp2db->sa, &length);
-  if (recread < 0) {
-    LOG("ERROR reading udp packet. recread = %d\n", recread);
-    perror("recvfrom returned");
-    fclose(logio);
-    exit(0);
-    return 0;
-  }
-  
-  memcpy(application_header_string, (void *)buf2d[0], PACKHEADER); /* Copy the application header to a string */
-  read_applicationheader(application_header_string, appheader);    /* Extract the application header from the string */
-
-  // Copy buffer into data, skipping the PACKHEADER bytes of header
-  memcpy(udp2db->data, (void *) &buf2d[0][PACKHEADER], RECSIZE);
-
-  // Check if timestamp is consistent with what is expected
-  *timestamp = appheader->timestamp;
-
-  // Copy record to shared memory
-  if ( (ipcio_write(hdu[appheader->allbands_index[appheader->band]]->data_block, udp2db->data, RECSIZE) ) < RECSIZE){
-    LOG("ERROR. Cannot write requested bytes to shared memory\n");
-    fclose(logio);
-    exit(EXIT_FAILURE);
-  }
-
-  return recread;
-}
-
-/* This routine will scan the keystring and extract the keys */
-int Readkeys(char *keystring, key_t *keys)
-{
-  char *token;
-  int nkeys = 0;
-
-  LOG("Reading keys from %s\n", keystring);
-  token = strtok(keystring, " ");
-
-  while (token) {
-    // Copy the key to the array
-    sscanf(token, "%x", &(keys[nkeys]));
-    LOG("%i\n", keys[nkeys]);
-    token = strtok(NULL, " ");
-    nkeys++;
-  }
-  return nkeys;
-}
-
-/* This routine will scan the headerstring and extract the headers for the dada files */
-int Readheaders(char *headerstring, header_type *headers)
-{
-  char *token;
-  int nheaders = 0;
-
-  LOG("Reading headers from %s\n", headerstring);
-  token = strtok(headerstring, " ");
-
-  while (token) {
-    strncpy(headers->files[nheaders], token, MAX_STRLEN);
-    headers->buffers[nheaders] = NULL;
-    headers->size[nheaders] = 4096;
-
-    token = strtok(NULL, " ");
-    nheaders++;
-  }
-  return nheaders;
-}
-
-// Check if the nstream packets have identical timestamps.
-int checktimestamps(int n, unsigned long *timestamps)
-{
-  int i;
-  for (i=1; i<n; i++)
-    if (timestamps[i] != timestamps[i-1]) return 1;
-  return 0;
-}
-
-void PrintOptions()
+/**
+ * Print commandline optinos
+ */
+void printOptions()
 {
   printf("usage: fill_ringbuffer -h <\"header files\"> -k <\"list of hexadecimal keys\"> -s <starttime (packets after 1970)> -d <duration (s)> -p <port> -l <logfile>\n");
   printf("e.g. fill_ringbuffer -h \"header1.txt header2.txt header3.txt header4.txt header5.txt header6.txt header7.txt header8.txt\" -k \"10 20 30 40 50 60 70 80\" -s 11565158400000 -d 3600 -p 4000 -l log.txt\n");
   return;
 }
 
-
-/* This function will process the arguments */
-/* Arguments are header-file, list of keys and port */
-void parseopts(int argc, char*argv[], char *headerstring, char *keystring, unsigned long *starttime, int *duration, int *port, char *logfile)
-{
+/**
+ * Parse commandline
+ */
+void parseOptions(int argc, char*argv[], char **headers, char **keys, unsigned long *starttime, int *duration, int *port, char **logfile) {
   int c;
+
   int seth=0, setk=0, sets=0, setd=0, setp=0, setl=0;
   while((c=getopt(argc,argv,"h:k:s:d:p:l:"))!=-1)
     switch(c) {
-    case('h') : sprintf(headerstring, "%s", optarg); seth=1; break;
-    case('k') : sprintf(keystring, "%s", optarg); setk=1; break;
-    case('s') : *starttime=atol(optarg); sets=1; break;
-    case('d') : *duration=atoi(optarg); setd=1; break;
-    case('p') : *port=atoi(optarg); setp=1; break;
-    case('l') : snprintf(logfile, 999, "%s", optarg); setl=1; break;
-    default   : PrintOptions(); exit(0);
+      // -h <heaer_files>
+      case('h'):
+        *headers = strdup(optarg);
+        seth=1;
+        break;
+
+      // -k <list of hexadecimal keys
+      case('k'):
+        *keys = strdup(optarg);
+        setk=1;
+        break;
+
+      // -s starttime (packets after 1970)
+      case('s'):
+        *starttime=atol(optarg);
+        sets=1; 
+        break;
+
+      // -d duration in seconds
+      case('d'):
+        *duration=atoi(optarg);
+        setd=1;
+        break;
+
+      // -p port number
+      case('p'):
+        *port=atoi(optarg);
+        setp=1;
+        break;
+
+      // -l log file
+      case('l'):
+        *logfile = strdup(optarg);
+        setl=1;
+        break;
+      default: printOptions(); exit(0);
     }
-  if (!seth || !setk || !sets || !setd || !setp || !setl) {PrintOptions(); exit(EXIT_FAILURE);}
+
+  // All arguments are required
+  if (!seth || !setk || !sets || !setd || !setp || !setl) {
+    printOptions();
+    exit(EXIT_FAILURE);
+  }
 }
 
 
-int main(int argc, char** argv)
-{
-  udp2db_t udp2db;
+/**
+ * Open a socket to read from a network port
+ *
+ * @param {int} port Network port to connect to
+ * @param {int *} sock Socket identifier as returned by socket()
+ * @param {struct sockaddr_in *} sa socket address
+ */
+void init_network(int port, int *sock, struct sockaddr_in *sa) {
+  *sock = socket(AF_INET, SOCK_DGRAM, 0);
 
-  /* DADA header plus data */
-  dada_hdu_t *hdu[MAX_STREAMS];
-  char *ObsId = "Test";
-  char logfile[999]; // location of the logfile
-  FILE* logio;
-  int port;
-  int n, i, j;
-  long long nbufs=0;
-  char daemon = 0; /* daemon mode */
-  int verbose = 0; /* verbosity */
-  char writemode='W'; /* Needs to be a capital! */
-  char headerstring[9999], keystring[999]; // read the arguments headerstring and keystring 
-  multilog_t* log = multilog_open("fill_ringbuffer", 0);
+  // set socket buffer size
+  int sockbufsize = SOCKBUFSIZE;
+  setsockopt(*sock, SOL_SOCKET, SO_RCVBUF, &sockbufsize, sizeof(sockbufsize));
 
-  key_t keys[MAX_KEYS];
-  int nkeys;
+  // set socket address
+  memset(sa, 0, sizeof(*sa));
+  sa->sin_family = AF_UNSPEC;
+  sa->sin_addr.s_addr = htonl(INADDR_ANY);
+  sa->sin_port = htons(port);
 
-  header_type headers;
+  // bind
+  if (bind(*sock, (struct sockaddr *) sa, sizeof (sa)) == -1) {
+    perror("bind failed");
+    close(*sock);
+    exit(EXIT_FAILURE);
+  }
+}
+
+/**
+ * Open a connection to the ringbuffer for each stream
+ * The metadata (header block) is read from file
+ * @param {dada_hdu_t **} hdu pointer to an array of HDU pointers to connect
+ * @param {char *} headers String containing the header file names to read
+ * @param {char *} keys String containing the shared memeory keys as hexadecimal numbers
+ * @returns {int} The number of opened HDU streams
+ */
+int init_ringbuffer(dada_hdu_t **hdu, char *headers, char *keys) {
   int nheaders;
+  char *header;
+  char *buf;
+  uint64_t bufsz;
 
-  appheader_type appheader;
-  int nstreams;             // The number of headers = number of keys
-  int duration;             // Duration of the observation in seconds
-  long nrecs;               // Number of records / packets to read
-  unsigned long starttime;  // Starttime of the observation in units of 1/781250 seconds after 1970
-  unsigned long endtime;    // Endtime of the observation in units of 1/781250 seconds after 1970
-  unsigned long timestamps[MAX_STREAMS]; // Keep track of the timestamps from each band.
+  int nkeys;
+  char *key;
+  key_t shmkey;
 
-  parseopts(argc, argv, headerstring, keystring, &starttime, &duration, &port, logfile); // Parse options
-  logio = Sopen(logfile, "w"); // Open a logfile
-  LOG("Messages from fill_ringbuffer\n\n");
-  nrecs = RECSPERSECOND * duration; // Number of records to read
-  endtime = starttime + nrecs*NBLOCK;
+  multilog_t* log = NULL; // TODO: See if this is used in anyway by dada
+  char writemode='W';     // needs to be a capital
+
+  // create a hdu for each key in the keys string
+  nkeys = 0;
+  key = strtok(keys, " ");
+
+  while(key) {
+    // create hdu
+    hdu[nkeys] = dada_hdu_create (log);
+
+    // init key
+    sscanf(key, "%x", &shmkey);
+    dada_hdu_set_key(hdu[nkeys], shmkey);
+
+    // connect
+    if (dada_hdu_connect (hdu[nkeys]) < 0) {
+      LOG("ERROR in dada_hdu_connect\n");
+      exit(EXIT_FAILURE);
+    }
+
+    // Make data buffers readable
+    if (dada_hdu_lock_write_spec (hdu[nkeys], writemode) < 0) {
+      LOG("ERROR in dada_hdu_lock_write_spec\n");
+      exit(EXIT_FAILURE);
+    }
+
+    // next key
+    key = strtok(NULL, " ");
+    nkeys++;
+  }
+
+  // read a hdu header for each header the headers string
+  nheaders = 0;
+  header = strtok(headers, " ");
+
+  while(header && nheaders < nkeys) {
+    // get dada buffer size
+    bufsz = ipcbuf_get_bufsz (hdu[nheaders]->header_block);
+
+    // get write address
+    buf = ipcbuf_get_next_write (hdu[nheaders]->header_block);
+    if (! buf) {
+      LOG("ERROR. Get next header block error\n");
+      exit(EXIT_FAILURE);
+    }
+
+    // read header from file
+    if (fileread (header, buf, bufsz) < 0) { 
+      LOG("ERROR. Cannot read header from %s\n", header);
+      exit(EXIT_FAILURE);
+    }
+
+    // tell the ringbuffer the header is filled
+    if (ipcbuf_mark_filled (hdu[nheaders]->header_block, bufsz) < 0) {
+      LOG("ERROR. Could not mark filled header block\n");
+      exit(EXIT_FAILURE);
+    }
+
+    // next header
+    header = strtok(NULL, " ");
+    nheaders++;
+  }
+
+  // check we read a header for each key
+  if (nheaders != nkeys) {
+    LOG("ERROR. Not enough headers for given keys: headers=%i keys=%i\n", nheaders, nkeys);
+    exit(EXIT_FAILURE);
+  }
+  // check if we read all headers, ie. no header remaining
+  if (header != NULL) {
+    LOG("ERROR: Too many headers, need only %i\n", nkeys);
+    exit(EXIT_FAILURE);
+  }
+
+  LOG("Initialized ring buffer using %d streams\n", nheaders);
+  return nheaders;
+}
+
+int main(int argc, char** argv) {
+  // network state
+  int sock;                 // port number
+  struct sockaddr_in sa;    // socket address
+  ssize_t recread;
+  socklen_t length;
+
+  // ringbuffer state
+  dada_hdu_t *hdu[MAX_STREAMS];
+  int band_to_hdu[MAX_BANDS];
+
+  // run parameters
+  int duration;            // run time in seconds
+  int nstreams;            // Number of HDU streams opened
+  long nrecs;              // Number of records / packets to read
+  float missing_pct;       // Number of records missed in percentage of expected number
+  unsigned long missing;   // Number of records missed
+  unsigned long starttime; // Starttime of the observation in units of 1/781250 seconds after 1970
+  unsigned long endtime;   // Endtime of the observation in units of 1/781250 seconds after 1970
+
+  // local vars
+  char *headers;
+  char *keys;
+  char *logfile;
+  FILE *log = NULL;
+  const char mode = 'w';
+  packet_t buffer;
+  unsigned long timestamp;     // Current timestamp
+  unsigned short band;         // Current band
+  unsigned short stream;       // HDU stream
+  // unsigned long previous_stamp[MAX_BANDS];   // last encountered timestamp per band
+  unsigned long records_per_band[MAX_BANDS]; // number of records processed per band
+
+  // parse commandline
+  parseOptions(argc, argv, &headers, &keys, &starttime, &duration, &sock, &logfile);
+
+  // set up logging
+  if (logfile) {
+    log = fopen(logfile, &mode);
+    if (! log) {
+      LOG("ERROR opening logfile: %s\n", logfile);
+      exit(EXIT_FAILURE);
+    }
+    LOG("Logging to logfile: %s\n", logfile);
+    free (logfile);
+  }
+
+  // calculate run length
+  nrecs = RECSPERSECOND * duration;
+  endtime = starttime + nrecs * NBLOCKS;
   LOG("Starttime = %ld\n", starttime);
   LOG("Endtime = %ld\n", endtime);
-  LOG("Going to read %ld records\n", nrecs);
+  LOG("Planning to read %i x %i = %ld records\n", duration, RECSPERSECOND, nrecs);
 
-  /* read keys */
-  nkeys = Readkeys(keystring, keys); // Read the keys.
+  // sockets
+  LOG("Opening network port %i\n", sock);
+  init_network(sock, &sock, &sa);
 
-  /* read headers */
-  nheaders = Readheaders(headerstring, &headers);
-  printf("Nheaders: %d\n", nheaders);
+  // ring buffer
+  LOG("Connecting to ringbuffer\n");
+  nstreams = init_ringbuffer(hdu, headers, keys);
+  free(headers);
+  free(keys);
 
-  if (nheaders != nkeys) {
-    LOG("ERROR: The number of headers do not match the number of keys\n");
-    fclose(logio);
-    exit(EXIT_FAILURE);
-  } else {
-    LOG("The number of headers and keys: %d\n", nheaders);
+  // clear band mapping etc.
+  for (band=0; band<MAX_BANDS; band++) {
+    band_to_hdu[band] = -1;
+    // previous_stamp[band] = 0;
+    records_per_band[band] = 0;
   }
 
-  nstreams = nheaders; // nstreams is just the number of headers = number of keys
+  // idle till starttime, but keep track of which bands there are
+  timestamp = 0;
+  while (timestamp < starttime) {
+    recread = recvfrom(sock, (void *) &buffer, PACKETSIZE, 0, (struct sockaddr *) &sa, &length);
+    if (recread != PACKETSIZE) {
+      LOG("ERROR Could not read packet\n");
+      goto exit;
+    }
+    band = bswap_16(buffer.band);
+    timestamp = bswap_64(buffer.timestamp);
 
-  udp2db.verbose = verbose;
-  udp2db.nbufs = nbufs;
-  udp2db.buf = 0;
-  udp2db.nSecs = duration;
-  udp2db.daemon = daemon;
-  udp2db.ObsId = ObsId;
-  udp2db.FirstFlag = 0;
-  
-  LOG("Going to initialise sockets...\n");
-  if (init(&udp2db, port) < 0) {
-    LOG("Unable to initialise.\n");
-    fclose(logio);
-    exit(EXIT_FAILURE);
+    // keep track of timestamps, 
+    // mark this band as present
+    // previous_stamp[band] = timestamp;
+    band_to_hdu[band] = 1;
   }
-  LOG("Initialisation done.\n");
 
-  /* Create the header/data blocks */
-  for (i=0; i<nstreams; i++) {
-    LOG("Stream %i\n", i);
-
-    LOG("Creating hdu\n");
-    hdu[i] = dada_hdu_create (log);
-
-    LOG("Setting key hdu stream=%i key=%x\n", i, keys[i]);
-    dada_hdu_set_key(hdu[i], keys[i]);
-
-    LOG("Connecting\n");
-    if (dada_hdu_connect (hdu[i]) < 0) {
-      LOG("ERROR in dada_hdu_connect for stream %i key %x, error: %i\n", i, keys[i], errno);
-      fclose(logio);
-      exit(EXIT_FAILURE);
-    }
-
-    /* Make data buffers readable */
-    LOG("Make data buffers readable\n");
-    if (dada_hdu_lock_write_spec (hdu[i],writemode) < 0) {
-      LOG("ERROR in dada_hdu_lock_write_spec\n");
-      fclose(logio);
-      return EXIT_FAILURE;
-      exit(EXIT_FAILURE);
-    }
-
-    /* Set headers */
-    LOG("Set headers\n");
-
-    LOG("..ipcbuf_get_bufsz\n");
-    headers.size[i] = ipcbuf_get_bufsz (hdu[i]->header_block);
-
-    LOG("..ipcbuf_get_next_write\n");
-    headers.buffers[i] = ipcbuf_get_next_write (hdu[i]->header_block);
-    if (!headers.buffers[i]) {
-      LOG("ERROR. Get next header block error.\n");
-      fclose(logio);
-      exit(EXIT_FAILURE);
-    }
-
-    /* Read header */
-    LOG("Read header\n");
-    if (fileread (headers.files[i], headers.buffers[i], headers.size[i]) < 0) {
-      LOG("ERROR. Cannot read header from %s\n", headers.files[i]);
-      fclose(logio);
-      exit(EXIT_FAILURE);
-    }
-
-    /* Mark filled */
-    LOG("Mark filled\n");
-    if (ipcbuf_mark_filled (hdu[i]->header_block, headers.size[i]) < 0) {
-      LOG("ERROR. Could not mark filled header block\n");
-      fclose(logio);
-      exit(EXIT_FAILURE);
+  // map bands to HDU streams
+  stream = 0;
+  for (band=0; band < MAX_BANDS; band++) {
+    if (band_to_hdu[band] == 1) {
+      band_to_hdu[band] = stream;
+      LOG("Mapping band %i to HDU unit %i\n", band, stream);
+      stream++;
     }
   }
-  LOG("Headers created.\n");
-
-  /* First read all the bands once to get information from the packet headers */
-  readfirstpackets(&udp2db, &hdu, &appheader, nstreams, starttime, timestamps, logio);
-
-  LOG("Read first packets.\n");
-
-  if (checktimestamps(nstreams, timestamps)) {
-    LOG("Warning: timestamps from record 0 are not identical!\n");
-    exit(0);
+  if (stream != nstreams) {
+    LOG("ERROR Number of bands does not match number of streams: %d and %d\n", stream, nstreams);
+    goto exit;
   }
-  LOG("Done checking timestamps.\n");
 
-  for (i=0; i<nstreams; i++) {
-    LOG("%ld\n", timestamps[i]);
-  }
-  
-  /* Loop over all runs */
-  LOG("Reading and buffering.\n");
-
-  for (i=1; i<nrecs; i++) {                        // read from 1 to nrec records, because we already read number 0
-    for (j=0; j<nstreams; j++) {
-      n = readpacket(&udp2db, &hdu, &appheader, &timestamps[j], i, j, nstreams, logio);
-      if (n < 0) {
-        LOG("Warning, problem when reading record %d, stream %d\n", i, j);
-      } else {
-        LOG("%ld\t", timestamps[j]-starttime); // FIXME: remove
-      }
+  // run till endtime
+  while (timestamp < endtime) {
+    // read packet
+    if (recvfrom(sock, (void *) &buffer, PACKETSIZE, 0, (struct sockaddr *) &sa, &length) != PACKETSIZE) {
+      LOG("ERROR Could not read packet\n");
+      goto exit;
     }
-    LOG("\n");
-    if (timestamps[0] > endtime) { 
-      LOG("Warning, end of observation occurred before all packets were read.\n");
-      LOG("I have %d packets out of %ld, which corresponds to %f seconds.\n", i+1, nrecs, i/(float)RECSPERSECOND);
-      break;
+
+    // parse header for band
+    band = bswap_16(buffer.band);
+
+    // check number of blocks
+    if (bswap_16(buffer.nblocks) != NBLOCKS) {
+      LOG("Warning: number of blocks in packet is not equal to %d\n", NBLOCKS);
+      goto exit;
+    }
+
+    // match to hdu
+    stream = band_to_hdu[band];
+    if (stream == -1) {
+      LOG("ERROR: unexpected band number %d\n", stream);
+      goto exit;
+    }
+
+    // copy to ringbuffer
+    if (ipcio_write(hdu[stream]->data_block, (char *) &buffer.record, RECORDSIZE) != RECORDSIZE){
+      LOG("ERROR. Cannot write requested bytes to SHM\n");
+      goto exit;
+    }
+
+    // do some extra processing on the packet
+    timestamp = bswap_64(buffer.timestamp);
+    records_per_band[band]++;
+
+    // TODO: what more is required?
+    // * do we need to signal packet loss immediately, or is it sufficient to give statistics at the end of the run?
+    // previous_stamp[band] = timestamp;
+  }
+
+  // print diagnostics
+  LOG("Packets read:\n");
+  for (band=0; band < MAX_BANDS; band++) {
+    if (band_to_hdu[band] != -1) {
+      missing = nrecs - records_per_band[band];
+      missing_pct = (100.0 * missing) / (1.0 * nrecs);
+      LOG("Band %4i: %10ld out of %10ld, missing %10ld [%5.2f%%] records\n", band, records_per_band[band], nrecs, missing, missing_pct);
     }
   }
-  
-  LOG("Closing socket.\n");
-  
-  close(udp2db.sock);
-  
-  LOG("All Done.\n");
-  printf("All Done.\n");
-  fclose(logio);
-  multilog_close(log);  
-  return 0;
+
+  // clean up and exit
+exit:
+  close(sock);
+  fclose(log);
+  exit(EXIT_SUCCESS);
 }
