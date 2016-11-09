@@ -19,11 +19,26 @@
 #define RECORDSIZE 4800           // Size of the record = packet - header in bytes
 #define PACKHEADER 40             // Size of the packet header = PACKETSIZE-RECORDSIZE in bytes
 
+/* We currently use
+ *  - one band per port, with 
+ *  - one instance of fill_ringbuffer connected to
+ *  - one HDU. 
+ *  This allows for some extra optimizations
+ *  To turn those of, define MULTIBAND, fi. with compiler flag -DMULTIBAND
+ */
+#ifdef MULTIBAND
 #define MAX_STREAMS 16
 #define MAX_BANDS   16
+#else
+#define MAX_BANDS 1
+#define MAX_STREAMS 1
+#endif
+
 #define SOCKBUFSIZE 33554432      // Buffer size of socket
 #define RECSPERSECOND 15625       // Number of packets / records per second = 781250 * 24 * 4 / 4800
 #define NBLOCKS 50                // Number of data blocks in a packet / record, used to check the packet header
+
+FILE *runlog = NULL;
 
 /*
  * Packet header values are stored big endian
@@ -53,8 +68,7 @@ typedef struct {
  */
 
 // #define LOG(...) {fprintf(logio, __VA_ARGS__)}; 
-#define LOG(...) {fprintf(stdout, __VA_ARGS__); fflush(stdout); fflush(stderr);}
-
+#define LOG(...) {fprintf(stdout, __VA_ARGS__); fprintf(runlog, __VA_ARGS__);}
 
 /**
  * Print commandline optinos
@@ -136,13 +150,13 @@ void init_network(int port, int *sock, struct sockaddr_in *sa) {
   setsockopt(*sock, SOL_SOCKET, SO_RCVBUF, &sockbufsize, sizeof(sockbufsize));
 
   // set socket address
-  memset(sa, 0, sizeof(*sa));
+  memset(sa, 0, sizeof(struct sockaddr_in));
   sa->sin_family = AF_UNSPEC;
   sa->sin_addr.s_addr = htonl(INADDR_ANY);
   sa->sin_port = htons(port);
 
   // bind
-  if (bind(*sock, (struct sockaddr *) sa, sizeof (sa)) == -1) {
+  if (bind(*sock, (struct sockaddr *) sa, sizeof (struct sockaddr_in)) == -1) {
     perror("bind failed");
     close(*sock);
     exit(EXIT_FAILURE);
@@ -167,7 +181,7 @@ int init_ringbuffer(dada_hdu_t **hdu, char *headers, char *keys) {
   char *key;
   key_t shmkey;
 
-  multilog_t* log = NULL; // TODO: See if this is used in anyway by dada
+  multilog_t* multilog = NULL;
   char writemode='W';     // needs to be a capital
 
   // create a hdu for each key in the keys string
@@ -176,7 +190,7 @@ int init_ringbuffer(dada_hdu_t **hdu, char *headers, char *keys) {
 
   while(key) {
     // create hdu
-    hdu[nkeys] = dada_hdu_create (log);
+    hdu[nkeys] = dada_hdu_create (multilog);
 
     // init key
     sscanf(key, "%x", &shmkey);
@@ -270,7 +284,6 @@ int main(int argc, char** argv) {
   char *headers;
   char *keys;
   char *logfile;
-  FILE *log = NULL;
   const char mode = 'w';
   packet_t buffer;
   unsigned long timestamp;     // Current timestamp
@@ -284,8 +297,8 @@ int main(int argc, char** argv) {
 
   // set up logging
   if (logfile) {
-    log = fopen(logfile, &mode);
-    if (! log) {
+    runlog = fopen(logfile, &mode);
+    if (! runlog) {
       LOG("ERROR opening logfile: %s\n", logfile);
       exit(EXIT_FAILURE);
     }
@@ -365,6 +378,7 @@ int main(int argc, char** argv) {
       goto exit;
     }
 
+#ifdef MULTIBAND
     // match to hdu
     stream = band_to_hdu[band];
     if (stream == -1) {
@@ -377,6 +391,13 @@ int main(int argc, char** argv) {
       LOG("ERROR. Cannot write requested bytes to SHM\n");
       goto exit;
     }
+#else
+    // always copy to first HDU stream in the ringbuffer
+    if (ipcio_write(hdu[0]->data_block, (char *) &buffer.record, RECORDSIZE) != RECORDSIZE){
+      LOG("ERROR. Cannot write requested bytes to SHM\n");
+      goto exit;
+    }
+#endif
 
     // do some extra processing on the packet
     timestamp = bswap_64(buffer.timestamp);
@@ -399,7 +420,11 @@ int main(int argc, char** argv) {
 
   // clean up and exit
 exit:
+  fflush(stdout);
+  fflush(stderr);
+  fflush(runlog);
+
   close(sock);
-  fclose(log);
+  fclose(runlog);
   exit(EXIT_SUCCESS);
 }

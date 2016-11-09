@@ -1,4 +1,3 @@
-
 ROOT ?= $(HOME)
 
 # http://psrdada.sourceforge.net/
@@ -9,7 +8,7 @@ DADA_DEPS := $(PSRDADA)/src/dada_hdu.o $(PSRDADA)/src/ipcbuf.o $(PSRDADA)/src/ip
 
 CFLAGS := -Wall
 ifneq ($(debug), 1)
-	CFLAGS += -O3 -g0
+	CFLAGS += -O3 -g0 -march=native 
 else
 	CFLAGS += -O0 -g3
 endif
@@ -27,4 +26,3 @@ all: src/fill_ringbuffer.c
 
 clean:
 	-@rm bin/*
-
