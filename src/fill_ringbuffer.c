@@ -3,6 +3,9 @@
  * Author: Jisk Attema, based on code by Roy Smits
  *
  */
+// needed for GNU extension to recvfrom: recvmmsg
+#define _GNU_SOURCE
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +21,7 @@
 #define PACKETSIZE 4840           // Size of the packet, including the header in bytes
 #define RECORDSIZE 4800           // Size of the record = packet - header in bytes
 #define PACKHEADER 40             // Size of the packet header = PACKETSIZE-RECORDSIZE in bytes
+#define MMSG_VLEN  256            // Batch message into single syscal using recvmmsg()
 
 /* We currently use
  *  - one band per port, with 
@@ -30,6 +34,7 @@
 #define MAX_BANDS   16
 
 #define SOCKBUFSIZE 67108864      // Buffer size of socket
+#define RECSTIMEDELTA 64          // Miliseconds between two records
 #define RECSPERSECOND 15625       // Number of packets / records per second = 781250 * 24 * 4 / 4800
 #define NBLOCKS 50                // Number of data blocks in a packet / record, used to check the packet header
 
@@ -63,7 +68,7 @@ typedef struct {
  */
 
 // #define LOG(...) {fprintf(logio, __VA_ARGS__)}; 
-#define LOG(...) {fprintf(stdout, __VA_ARGS__); fprintf(runlog, __VA_ARGS__);}
+#define LOG(...) {fprintf(stdout, __VA_ARGS__); fprintf(runlog, __VA_ARGS__); fflush(stdout);}
 
 /**
  * Print commandline optinos
@@ -183,6 +188,7 @@ int init_ringbuffer(dada_hdu_t **hdu, char *headers, char *keys) {
   nkeys = 0;
   key = strtok(keys, " ");
 
+  LOG("Mapping between HDUs and keys\n");
   while(key) {
     // create hdu
     hdu[nkeys] = dada_hdu_create (multilog);
@@ -190,6 +196,7 @@ int init_ringbuffer(dada_hdu_t **hdu, char *headers, char *keys) {
     // init key
     sscanf(key, "%x", &shmkey);
     dada_hdu_set_key(hdu[nkeys], shmkey);
+    LOG("HDU %02i: key: %s\n", nkeys, key);
 
     // connect
     if (dada_hdu_connect (hdu[nkeys]) < 0) {
@@ -212,6 +219,7 @@ int init_ringbuffer(dada_hdu_t **hdu, char *headers, char *keys) {
   nheaders = 0;
   header = strtok(headers, " ");
 
+  LOG("Mapping between HDUs and headers\n");
   while(header && nheaders < nkeys) {
     // get dada buffer size
     bufsz = ipcbuf_get_bufsz (hdu[nheaders]->header_block);
@@ -234,6 +242,7 @@ int init_ringbuffer(dada_hdu_t **hdu, char *headers, char *keys) {
       LOG("ERROR. Could not mark filled header block\n");
       exit(EXIT_FAILURE);
     }
+    LOG("HDU %02i: header: %s\n", nheaders, header);
 
     // next header
     header = strtok(NULL, " ");
@@ -264,7 +273,9 @@ int main(int argc, char** argv) {
 
   // ringbuffer state
   dada_hdu_t *hdu[MAX_STREAMS];
+#ifdef MULTIBAND
   int band_to_hdu[MAX_BANDS];
+#endif
   int bands_present[MAX_BANDS];
 
   // run parameters
@@ -281,7 +292,13 @@ int main(int argc, char** argv) {
   char *keys;
   char *logfile;
   const char mode = 'w';
-  packet_t buffer;
+
+  packet_t packet_buffer[MMSG_VLEN];   // Buffer for batch requesting packets via recvmmsg
+  unsigned int packet_idx;             // Current packet index in MMSG buffer
+  struct iovec iov[MMSG_VLEN];         // IO vec structure for recvmmsg
+  struct mmsghdr msgs[MMSG_VLEN];      // multimessage hearders for recvmmsg
+
+  packet_t *packet;            // Pointer to current packet
   unsigned long timestamp;     // Current timestamp
   unsigned short band;         // Current band
   unsigned short stream;       // HDU stream
@@ -313,6 +330,18 @@ int main(int argc, char** argv) {
   LOG("Opening network port %i\n", sock);
   init_network(sock, &sock, &sa);
 
+  // multi message setup
+  memset(msgs, 0, sizeof(msgs));
+  for(packet_idx=0; packet_idx < MMSG_VLEN; packet_idx++) {
+    iov[packet_idx].iov_base = (char *) &packet_buffer[packet_idx];
+    iov[packet_idx].iov_len = PACKETSIZE;
+
+    msgs[packet_idx].msg_hdr.msg_name    = NULL; // we don't need to know who sent the data
+    msgs[packet_idx].msg_hdr.msg_iov     = &iov[packet_idx];
+    msgs[packet_idx].msg_hdr.msg_iovlen  = 1;
+    msgs[packet_idx].msg_hdr.msg_control = NULL; // we're not interested in OoB data
+  }
+
   // ring buffer
   LOG("Connecting to ringbuffer\n");
   nstreams = init_ringbuffer(hdu, headers, keys);
@@ -321,37 +350,48 @@ int main(int argc, char** argv) {
 
   // clear band mapping etc.
   for (band=0; band<MAX_BANDS; band++) {
-    band_to_hdu[band] = -1;
     bands_present[band] = 0;
     records_per_band[band] = 0;
   }
 
+  // start at the end of the packet buffer, so the main loop starts with a recvmmsg call
+  packet_idx = MMSG_VLEN - 1;
+  packet = &packet_buffer[packet_idx];
+
+
+  // ============================================================
   // idle till starttime, but keep track of which bands there are
+  // ============================================================
+ 
   timestamp = 0;
   while (timestamp < starttime) {
-    recread = recvfrom(sock, (void *) &buffer, PACKETSIZE, 0, (struct sockaddr *) &sa, &length);
+    recread = recvfrom(sock, (void *) packet, PACKETSIZE, 0, (struct sockaddr *) &sa, &length);
     if (recread != PACKETSIZE) {
       LOG("ERROR Could not read packet\n");
       goto exit;
     }
-    // keep track of timestamps, 
-    timestamp = bswap_64(buffer.timestamp);
 
     // mark this band as present
-    band = bswap_16(buffer.band);
+    band = bswap_16(packet->band);
     if (band >= MAX_BANDS) {
       LOG("ERROR. Band number higher than maximum value: %i >= %i\n", band, MAX_BANDS);
       LOG("ERROR. Increase MAX_BANDS and recompile.\n");
       exit(EXIT_FAILURE);
     }
     bands_present[band] = 1;
+
+    // keep track of timestamps, 
+    timestamp = bswap_64(packet->timestamp);
+    previous_stamp[band] = timestamp;
   }
 
   // map bands to HDU streams
   stream = 0;
   for (band=0; band < MAX_BANDS; band++) {
     if (bands_present[band] == 1) {
+#ifdef MULTIBAND
       band_to_hdu[band] = stream;
+#endif
       LOG("Mapping band %i to HDU unit %i\n", band, stream);
       stream++;
     }
@@ -361,53 +401,68 @@ int main(int argc, char** argv) {
     goto exit;
   }
 
-  // run till endtime
-  while (timestamp < endtime) {
-    // read packet
-    if (recvfrom(sock, (void *) &buffer, PACKETSIZE, 0, (struct sockaddr *) &sa, &length) != PACKETSIZE) {
-      LOG("ERROR Could not read packet\n");
-      goto exit;
-    }
+#ifdef MULTIBAND
+  // band to stream mapping happens in the main loop below
+#else
+  // always copy to first HDU stream in the ringbuffer;
+  stream = 0;
+#endif
 
-    // parse header for band number
-    band = bswap_16(buffer.band);
+  // ============================================================
+  // run till endtime
+  // ============================================================
+ 
+  while (timestamp < endtime) {
+    // go to next packet in the packet buffer
+    packet_idx++;
+
+    // did we reach the end of the packet buffer?
+    if (packet_idx == MMSG_VLEN) {
+      // read new packets from the network into the buffer
+      if(recvmmsg(sock, msgs, MMSG_VLEN, 0, NULL) != MMSG_VLEN) {
+        LOG("ERROR Could not read packets\n");
+        goto exit;
+      }
+      // go to start of buffer
+      packet_idx = 0;
+    }
+    packet = &packet_buffer[packet_idx];
+ 
+    // check band number
+    band = bswap_16(packet->band);
     if (bands_present[band] == 0) {
-      LOG("ERROR: unexpected band number %d\n", stream);
+      LOG("ERROR: unexpected band number %d\n", band);
       goto exit;
     }
 
     // check number of blocks
-    if (bswap_16(buffer.nblocks) != NBLOCKS) {
+    if (bswap_16(packet->nblocks) != NBLOCKS) {
       LOG("Warning: number of blocks in packet is not equal to %d\n", NBLOCKS);
       goto exit;
     }
 
 #ifdef MULTIBAND
-    // match to hdu
+    // match band to stream
     stream = band_to_hdu[band];
-
-    // copy to ringbuffer
-    if (ipcio_write(hdu[stream]->data_block, (char *) &buffer.record, RECORDSIZE) != RECORDSIZE){
-      LOG("ERROR. Cannot write requested bytes to SHM\n");
-      goto exit;
-    }
-#else
-    // always copy to first HDU stream in the ringbuffer;
-    // stream = 0
-
-    // copy to ringbuffer
-    if (ipcio_write(hdu[0]->data_block, (char *) &buffer.record, RECORDSIZE) != RECORDSIZE){
-      LOG("ERROR. Cannot write requested bytes to SHM\n");
-      goto exit;
-    }
 #endif
 
-    // do some extra processing on the packet
-    timestamp = bswap_64(buffer.timestamp);
-    records_per_band[band]++;
+    // check timestamps
+    timestamp = bswap_64(packet->timestamp);
 
-    // TODO: what more is required?
-    // * do we need to signal packet loss immediately, or is it sufficient to give statistics at the end of the run?
+    // repeatedly add this packet to make up for missed / dropped packets
+    while (previous_stamp[band] < timestamp) {
+      // copy to ringbuffer
+      if (ipcio_write(hdu[stream]->data_block, (char *) packet->record, RECORDSIZE)
+          != RECORDSIZE) {
+        LOG("ERROR. Cannot write requested bytes to SHM\n");
+        goto exit;
+      }
+      previous_stamp[band] += RECSTIMEDELTA;
+    }
+
+    // book keeping
+    records_per_band[band]++;
+    previous_stamp[band] = timestamp;
   }
 
   // print diagnostics
@@ -416,9 +471,11 @@ int main(int argc, char** argv) {
     if (bands_present[band] == 1) {
       missing = nrecs - records_per_band[band];
       missing_pct = (100.0 * missing) / (1.0 * nrecs);
-      LOG("Band %4i: %10ld out of %10ld, missing %10ld [%5.2f%%] records\n", band, records_per_band[band], nrecs, missing, missing_pct);
+      LOG("Band %4i: %10ld out of %10ld, missing %10ld [%5.2f%%] records\n",
+          band, records_per_band[band], nrecs, missing, missing_pct);
     }
   }
+  LOG("NOTE: Missing packets are filled in by repeatedly copying current packet.\n");
 
   // clean up and exit
 exit:
