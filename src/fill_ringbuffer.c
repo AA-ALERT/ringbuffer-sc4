@@ -3,13 +3,15 @@
  * Author: Jisk Attema, based on code by Roy Smits
  *
  */
-// needed for GNU extension to recvfrom: recvmmsg
+// needed for GNU extension to recvfrom: recvmmsg, bswap
 #define _GNU_SOURCE
 
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <getopt.h>
 #include <netinet/in.h>
@@ -34,7 +36,6 @@
 #define MAX_BANDS   16
 
 #define SOCKBUFSIZE 67108864      // Buffer size of socket
-#define RECSTIMEDELTA 64          // Miliseconds between two records
 #define RECSPERSECOND 15625       // Number of packets / records per second = 781250 * 24 * 4 / 4800
 #define NBLOCKS 50                // Number of data blocks in a packet / record, used to check the packet header
 
@@ -134,33 +135,57 @@ void parseOptions(int argc, char*argv[], char **headers, char **keys, unsigned l
   }
 }
 
-
 /**
  * Open a socket to read from a network port
  *
  * @param {int} port Network port to connect to
- * @param {int *} sock Socket identifier as returned by socket()
- * @param {struct sockaddr_in *} sa socket address
+ * @returns {int} socket file descriptor
  */
-void init_network(int port, int *sock, struct sockaddr_in *sa) {
-  *sock = socket(AF_INET, SOCK_DGRAM, 0);
+int init_network(int port) {
+  int sock;
+  struct addrinfo hints, *servinfo, *p;
+  char service[256];
 
-  // set socket buffer size
-  int sockbufsize = SOCKBUFSIZE;
-  setsockopt(*sock, SOL_SOCKET, SO_RCVBUF, &sockbufsize, (socklen_t)sizeof(int));
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family = AF_INET; // set to AF_INET to force IPv4
+  hints.ai_socktype = SOCK_DGRAM;
+  hints.ai_flags = AI_PASSIVE; // use my IP
 
-  // set socket address
-  memset(sa, 0, sizeof(struct sockaddr_in));
-  sa->sin_family = AF_UNSPEC;
-  sa->sin_addr.s_addr = htonl(INADDR_ANY);
-  sa->sin_port = htons(port);
-
-  // bind
-  if (bind(*sock, (struct sockaddr *) sa, sizeof (struct sockaddr_in)) == -1) {
-    perror("bind failed");
-    close(*sock);
+  snprintf(service, 255, "%i", port);
+  if (getaddrinfo(NULL, service, &hints, &servinfo) != 0) {
+    perror(NULL);
     exit(EXIT_FAILURE);
   }
+
+  for(p = servinfo; p != NULL; p = p->ai_next) {
+    sock = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+    if (sock == -1) {
+      perror(NULL);
+      continue;
+    }
+
+    // set socket buffer size
+    int sockbufsize = SOCKBUFSIZE;
+    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &sockbufsize, (socklen_t)sizeof(int));
+
+    if(bind(sock, p->ai_addr, p->ai_addrlen) == -1) {
+      perror(NULL);
+      close(sock);
+      continue;
+    }
+
+    // set up, break the loop
+    break;
+  }
+
+  if (p == NULL) {
+    fprintf(stderr, "Cannot setup connection\n" );
+    exit(EXIT_FAILURE);
+  }
+
+  free(servinfo);
+
+  return sock;
 }
 
 /**
@@ -266,10 +291,8 @@ int init_ringbuffer(dada_hdu_t **hdu, char *headers, char *keys) {
 
 int main(int argc, char** argv) {
   // network state
-  int sock;                 // port number
-  struct sockaddr_in sa;    // socket address
-  ssize_t recread;
-  socklen_t length;
+  int port;                 // port number
+  int sockfd;               // socket file descriptor
 
   // ringbuffer state
   dada_hdu_t *hdu[MAX_STREAMS];
@@ -284,8 +307,8 @@ int main(int argc, char** argv) {
   long nrecs;              // Number of records / packets to read
   float missing_pct;       // Number of records missed in percentage of expected number
   unsigned long missing;   // Number of records missed
-  unsigned long starttime; // Starttime of the observation in units of 1/781250 seconds after 1970
-  unsigned long endtime;   // Endtime of the observation in units of 1/781250 seconds after 1970
+  unsigned long starttime; // Starttime (start block) of the observation in units of 1/781250 seconds after 1970
+  unsigned long endtime;   // Endtime (end block) of the observation in units of 1/781250 seconds after 1970
 
   // local vars
   char *headers;
@@ -306,7 +329,7 @@ int main(int argc, char** argv) {
   unsigned long records_per_band[MAX_BANDS]; // number of records processed per band
 
   // parse commandline
-  parseOptions(argc, argv, &headers, &keys, &starttime, &duration, &sock, &logfile);
+  parseOptions(argc, argv, &headers, &keys, &starttime, &duration, &port, &logfile);
 
   // set up logging
   if (logfile) {
@@ -324,11 +347,11 @@ int main(int argc, char** argv) {
   endtime = starttime + nrecs * NBLOCKS;
   LOG("Starttime = %ld\n", starttime);
   LOG("Endtime = %ld\n", endtime);
-  LOG("Planning to read %i x %i = %ld records\n", duration, RECSPERSECOND, nrecs);
+  LOG("Planning to read %i (s) x %i (rec/s) = %ld records\n", duration, RECSPERSECOND, nrecs);
 
   // sockets
-  LOG("Opening network port %i\n", sock);
-  init_network(sock, &sock, &sa);
+  LOG("Opening network port %i\n", port);
+  sockfd = init_network(port);
 
   // multi message setup
   memset(msgs, 0, sizeof(msgs));
@@ -364,12 +387,22 @@ int main(int argc, char** argv) {
   // ============================================================
  
   timestamp = 0;
+  packet_idx = MMSG_VLEN - 1;
   while (timestamp < starttime) {
-    recread = recvfrom(sock, (void *) packet, PACKETSIZE, 0, (struct sockaddr *) &sa, &length);
-    if (recread != PACKETSIZE) {
-      LOG("ERROR Could not read packet\n");
-      goto exit;
+    // go to next packet in the packet buffer
+    packet_idx++;
+
+    // did we reach the end of the packet buffer?
+    if (packet_idx == MMSG_VLEN) {
+      // read new packets from the network into the buffer
+      if(recvmmsg(sockfd, msgs, MMSG_VLEN, 0, NULL) != MMSG_VLEN) {
+        LOG("ERROR Could not read packets\n");
+        goto exit;
+      }
+      // go to start of buffer
+      packet_idx = 0;
     }
+    packet = &packet_buffer[packet_idx];
 
     // mark this band as present
     band = bswap_16(packet->band);
@@ -408,6 +441,10 @@ int main(int argc, char** argv) {
   stream = 0;
 #endif
 
+  // process the first (already-read) package by moving the packet_idx one back
+  // this to compensate for the packet_idx++ statement in the first pass of the mainloop
+  packet_idx--;
+
   // ============================================================
   // run till endtime
   // ============================================================
@@ -419,7 +456,7 @@ int main(int argc, char** argv) {
     // did we reach the end of the packet buffer?
     if (packet_idx == MMSG_VLEN) {
       // read new packets from the network into the buffer
-      if(recvmmsg(sock, msgs, MMSG_VLEN, 0, NULL) != MMSG_VLEN) {
+      if(recvmmsg(sockfd, msgs, MMSG_VLEN, 0, NULL) != MMSG_VLEN) {
         LOG("ERROR Could not read packets\n");
         goto exit;
       }
@@ -457,7 +494,7 @@ int main(int argc, char** argv) {
         LOG("ERROR. Cannot write requested bytes to SHM\n");
         goto exit;
       }
-      previous_stamp[band] += RECSTIMEDELTA;
+      previous_stamp[band] += NBLOCKS;
     }
 
     // book keeping
@@ -483,7 +520,7 @@ exit:
   fflush(stderr);
   fflush(runlog);
 
-  close(sock);
+  close(sockfd);
   fclose(runlog);
   exit(EXIT_SUCCESS);
 }
