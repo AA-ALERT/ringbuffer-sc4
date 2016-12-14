@@ -304,7 +304,7 @@ int main(int argc, char** argv) {
   // run parameters
   int duration;            // run time in seconds
   int nstreams;            // Number of HDU streams opened
-  long nrecs;              // Number of packets to read
+  long npackets;           // Number of packets to read
   float missing_pct;       // Number of packets missed in percentage of expected number
   unsigned long missing;   // Number of packets missed
   unsigned long notime;    // Number of packets without valid timestamp
@@ -327,7 +327,7 @@ int main(int argc, char** argv) {
   unsigned short band;         // Current band
   unsigned short stream;       // HDU stream
   unsigned long previous_stamp[MAX_BANDS];   // last encountered timestamp per band
-  unsigned long records_per_band[MAX_BANDS]; // number of records processed per band
+  unsigned long packets_per_band[MAX_BANDS]; // number of records processed per band
 
   // parse commandline
   parseOptions(argc, argv, &headers, &keys, &starttime, &duration, &port, &logfile);
@@ -344,11 +344,12 @@ int main(int argc, char** argv) {
   }
 
   // calculate run length
-  nrecs = RECSPERSECOND * duration;
-  endtime = starttime + nrecs * NBLOCKS;
+  npackets = RECSPERSECOND * duration;
+  endtime = starttime + npackets * NBLOCKS;
+  LOG("fill ringbuffer version: " VERSION "\n");
   LOG("Starttime = %ld\n", starttime);
   LOG("Endtime = %ld\n", endtime);
-  LOG("Planning to read %i (s) x %i (rec/s) = %ld records\n", duration, RECSPERSECOND, nrecs);
+  LOG("Planning to read %i (s) x %i (rec/s) = %ld records\n", duration, RECSPERSECOND, npackets);
 
   // sockets
   LOG("Opening network port %i\n", port);
@@ -375,7 +376,7 @@ int main(int argc, char** argv) {
   // clear band mapping etc.
   for (band=0; band<MAX_BANDS; band++) {
     bands_present[band] = 0;
-    records_per_band[band] = 0;
+    packets_per_band[band] = 0;
   }
   notime = 0;
 
@@ -505,7 +506,7 @@ int main(int argc, char** argv) {
     }
 
     // book keeping
-    records_per_band[band]++;
+    packets_per_band[band]++;
     previous_stamp[band] = timestamp;
   }
 
@@ -513,10 +514,10 @@ int main(int argc, char** argv) {
   LOG("Packets read:\n");
   for (band=0; band < MAX_BANDS; band++) {
     if (bands_present[band] == 1) {
-      missing = nrecs - records_per_band[band];
-      missing_pct = (100.0 * missing) / (1.0 * nrecs);
+      missing = npackets - packets_per_band[band];
+      missing_pct = (100.0 * missing) / (1.0 * npackets);
       LOG("Band %4i: %10ld out of %10ld, missing %10ld [%5.2f%%] records\n",
-          band, records_per_band[band], nrecs, missing, missing_pct);
+          band, packets_per_band[band], npackets, missing, missing_pct);
     }
   }
   LOG("Number of packets without timestamp: %li\n", notime);
