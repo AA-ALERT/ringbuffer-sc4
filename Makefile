@@ -36,8 +36,8 @@ src/send: src/send.c
 test: src/send
 	# delete old ringbuffer
 	-sudo $(BIN_DIR)/dada_db -d
-	# start a new ringbuffer on key 'dada'
-	sudo $(BIN_DIR)/dada_db -p -k dada -n 3 -l
+	# start a new ringbuffer on key 'dada' with 512 packets per buffer x 4840 byes = 1239040
+	sudo $(BIN_DIR)/dada_db -p -k dada -n 4 -l -b 1239040
 	# start a scrubber to empty the buffer (this fakes the pipeline reading data from the buffer)
 	$(BIN_DIR)/dada_dbscrubber -v -k dada &
 	# start spewing packages
