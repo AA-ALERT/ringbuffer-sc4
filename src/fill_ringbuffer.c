@@ -304,9 +304,10 @@ int main(int argc, char** argv) {
   // run parameters
   int duration;            // run time in seconds
   int nstreams;            // Number of HDU streams opened
-  long nrecs;              // Number of records / packets to read
-  float missing_pct;       // Number of records missed in percentage of expected number
-  unsigned long missing;   // Number of records missed
+  long nrecs;              // Number of packets to read
+  float missing_pct;       // Number of packets missed in percentage of expected number
+  unsigned long missing;   // Number of packets missed
+  unsigned long notime;    // Number of packets without valid timestamp
   unsigned long starttime; // Starttime (start block) of the observation in units of 1/781250 seconds after 1970
   unsigned long endtime;   // Endtime (end block) of the observation in units of 1/781250 seconds after 1970
 
@@ -376,6 +377,7 @@ int main(int argc, char** argv) {
     bands_present[band] = 0;
     records_per_band[band] = 0;
   }
+  notime = 0;
 
   // start at the end of the packet buffer, so the main loop starts with a recvmmsg call
   packet_idx = MMSG_VLEN - 1;
@@ -485,6 +487,11 @@ int main(int argc, char** argv) {
 
     // check timestamps
     timestamp = bswap_64(packet->timestamp);
+    if (timestamp == 0) {
+      // assume it is the expected packet, and set timestamp ourselves
+      timestamp = previous_stamp[band] + NBLOCKS;
+      notime++;
+    }
 
     // repeatedly add this packet to make up for missed / dropped packets
     while (previous_stamp[band] < timestamp) {
@@ -512,6 +519,7 @@ int main(int argc, char** argv) {
           band, records_per_band[band], nrecs, missing, missing_pct);
     }
   }
+  LOG("Number of packets without timestamp: %li\n", notime);
   LOG("NOTE: Missing packets are filled in by repeatedly copying current packet.\n");
 
   // clean up and exit
