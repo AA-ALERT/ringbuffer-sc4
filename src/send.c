@@ -24,9 +24,13 @@
  * 16-40 24        flags
  *  <4800 bytes of RECORDS> 
  */
+#define RECSPERSECOND 15625       // Number of records per second = 781250 * 24 * 4 / 4800
 #define PACKETSIZE 4840           // Size of the packet, including the header in bytes
 #define NBLOCKS 50                // Number of data blocks in a packet / record, used to check the packet header
 #define MMSG_VLEN  256            // Batch message into single syscal using recvmmsg()
+
+#define PACKETSPERSECOND ( (1.0 * RECSPERSECOND) / (1.0 * NBLOCKS) ) // packets per second
+#define UMSPPACKET (1000000.0 / PACKETSPERSECOND)
 
 typedef struct {
   unsigned short unused_A;
@@ -118,13 +122,28 @@ int main(int argc , char *argv[]) {
 
   packet_t *packet;                // Pointer to current packet
   unsigned long timestamp = 0;     // timestamp of current packet
+  unsigned long notime = 0;        // number of packets without timestamp
+  unsigned long dropped = 0;       // deliberately dropped packets
   while(timestamp < 1000000000) {
     for(packet_idx=0; packet_idx < MMSG_VLEN; packet_idx++) {
       packet = &packet_buffer[packet_idx];
 
       packet->nblocks = bswap_16(NBLOCKS);
       packet->band = bswap_16(4);
-      packet->timestamp = bswap_64(timestamp);
+
+      if (timestamp % 123456 == 0) {
+        // send packets without timestamp every once in a while..
+        packet->timestamp = bswap_64(0);
+        notime++;
+      } else if (timestamp % 12345 == 0) {
+        // deliberately drop some packets
+        timestamp += NBLOCKS;
+        packet->timestamp = bswap_64(timestamp);
+        dropped++;
+      } else {
+        packet->timestamp = bswap_64(timestamp);
+      }
+
       timestamp += NBLOCKS;
     }
 
@@ -134,9 +153,14 @@ int main(int argc , char *argv[]) {
       perror("ERROR Could not send packets");
       goto exit;
     }
+
+    // slow down sending a bit
+    usleep( UMSPPACKET  * 0.5);
   }
 
 exit:
+  fprintf(stderr, "Sent packets without timestamp: %li\n", notime);
+  fprintf(stderr, "Deliberately unsent packets:    %li\n", dropped);
   // done, clean up
   free(servinfo); 
   close(sockfd);
