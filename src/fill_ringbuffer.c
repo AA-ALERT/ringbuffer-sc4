@@ -452,7 +452,7 @@ int main(int argc, char** argv) {
   // run till endtime
   // ============================================================
  
-  while (timestamp < endtime) {
+  while (timestamp < endtime - NBLOCKS) {
     // go to next packet in the packet buffer
     packet_idx++;
 
