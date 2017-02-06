@@ -20,53 +20,52 @@
 #include "dada_hdu.h"
 #include "futils.h"
 
-#define PACKETSIZE 4840           // Size of the packet, including the header in bytes
-#define RECORDSIZE 4800           // Size of the record = packet - header in bytes
-#define PACKHEADER 40             // Size of the packet header = PACKETSIZE-RECORDSIZE in bytes
+#define PACKETSIZE 6356           // Size of the packet, including the header in bytes
+#define RECORDSIZE 6250           // Size of the record = packet - header in bytes
+#define PACKHEADER 106            // Size of the packet header = PACKETSIZE-RECORDSIZE in bytes
 #define MMSG_VLEN  256            // Batch message into single syscal using recvmmsg()
 
 /* We currently use
- *  - one band per port, with 
+ *  - one compound beam per instance
  *  - one instance of fill_ringbuffer connected to
  *  - one HDU. 
- *  This allows for some extra optimizations
- *  To turn those of, define MULTIBAND, fi. with compiler flag -DMULTIBAND
+ *
+ * Send on to ringbuffer a single second of data as a three dimensional array:
+ * [tab_index][channel][record] of sizes [0..11][0..1535][0..paddedsize] = 450432 kB for a ringbuffer page
+ *
+ * swap buffers when timestamp[0] changes: check with daniel what the timestamp actually means.
+ * timestamp[1] [0..3] value*6250 = offset in the large array
  */
-#define MAX_STREAMS 16
-#define MAX_BANDS   16
+
+#define NPACKETSSEGMENT (12*1536*4)
 
 #define SOCKBUFSIZE 67108864      // Buffer size of socket
-#define RECSPERSECOND 15625       // Number of packets / records per second = 781250 * 24 * 4 / 4800
-#define NBLOCKS 50                // Number of data blocks in a packet / record, used to check the packet header
 
 FILE *runlog = NULL;
 
 /*
- * Packet header values are stored big endian
- * Bytes length    description
- * 01-02  2
- * 02-03  2        band
- * 04-05  2        nchannel
- * 06-07  2        nblocks
- * 08-15  8        timestamp
- * 16-40 24        flags
- *  <4800 bytes of RECORDS> 
+ * Header description based on:
+ * ARTS Interface Specification from BF to SC3+4
+ * ASTRON_SP_066_InterfaceSpecificationSC34.pdf
  */
 typedef struct {
-  unsigned short unused_A;
-  unsigned short band;
-  unsigned short channel;
-  unsigned short nblocks;
-  unsigned long  timestamp;
+  unsigned char marker_byte;         // SC3: 130, SC4: 140
+  unsigned char format_version;      // Version: 0
+  unsigned char cb_index;            // [0,36] one compound beam per fill_ringbuffer instance:: ignore
+  unsigned char tab_index;           // [0,11] all tabs per fill_ringbuffer instance
+  unsigned short channel;            // [0,1535] all channels per fill_ringbuffer instance
+  unsigned short samples_per_packet; // RECORDSIZE (6250)
+  /**
+   * contains two unsigned integer numbers (each of 4 bytes); the
+   * first number contains the number of time units that have elapsed since the
+   * midnight of the 1st of January 1970, while the second number contains
+   * the unit of Number of Samples per Packet the packet is associated with.
+   */
+  int timestamp;
+  int subtime;
   unsigned long flags[3];
-  char record[4800];
+  unsigned char record[6250];
 } packet_t;
-
-/**
- * Data comes in at 18.75 MHz in packages of 4800 bytes:
- * 15833 blocks of 4800 bytes corresponds to 1 second of 19-MHz data
- * 15625 blocks of 4800 bytes corresponds to 1 second of 18.75-MHz data
- */
 
 // #define LOG(...) {fprintf(logio, __VA_ARGS__)}; 
 #define LOG(...) {fprintf(stdout, __VA_ARGS__); fprintf(runlog, __VA_ARGS__); fflush(stdout);}
@@ -76,35 +75,36 @@ typedef struct {
  */
 void printOptions()
 {
-  printf("usage: fill_ringbuffer -h <\"header files\"> -k <\"list of hexadecimal keys\"> -s <starttime (packets after 1970)> -d <duration (s)> -p <port> -l <logfile>\n");
-  printf("e.g. fill_ringbuffer -h \"header1.txt header2.txt header3.txt header4.txt header5.txt header6.txt header7.txt header8.txt\" -k \"10 20 30 40 50 60 70 80\" -s 11565158400000 -d 3600 -p 4000 -l log.txt\n");
+  printf("usage: fill_ringbuffer -h <header file> -k <hexadecimal key> -s <starttime seconds after 1970> -d <duration (s)> -p <port> -l <logfile>\n");
+  printf("e.g. fill_ringbuffer -h \"header1.txt\" -k 10 -s 11565158400000 -d 3600 -p 4000 -l log.txt\n");
   return;
 }
 
 /**
  * Parse commandline
  */
-void parseOptions(int argc, char*argv[], char **headers, char **keys, unsigned long *starttime, int *duration, int *port, char **logfile) {
+void parseOptions(int argc, char*argv[], char **header, char **key, int *starttime, int *duration, int *port, int *padded_size, char **logfile) {
   int c;
 
-  int seth=0, setk=0, sets=0, setd=0, setp=0, setl=0;
-  while((c=getopt(argc,argv,"h:k:s:d:p:l:"))!=-1)
+  int seth=0, setk=0, sets=0, setd=0, setp=0, setb=0, setl=0;
+  while((c=getopt(argc,argv,"h:k:s:d:p:l:"))!=-1) {
     switch(c) {
-      // -h <heaer_files>
+      // -h <heaer_file>
       case('h'):
-        *headers = strdup(optarg);
+        *header = strdup(optarg);
         seth=1;
         break;
 
-      // -k <list of hexadecimal keys
+      // -k <hexadecimal_key>
       case('k'):
-        *keys = strdup(optarg);
+        *key = strdup(optarg);
         setk=1;
         break;
 
-      // -s starttime (packets after 1970)
+      // -s starttime (seconds after 1970)
       case('s'):
-        *starttime=atol(optarg);
+        // *starttime=atol(optarg);
+        *starttime = atoi(optarg);
         sets=1; 
         break;
 
@@ -120,6 +120,12 @@ void parseOptions(int argc, char*argv[], char **headers, char **keys, unsigned l
         setp=1;
         break;
 
+      // -b padded size (bytes)
+      case('b'):
+        *padded_size = atoi(optarg);
+        setb=1;
+        break;
+
       // -l log file
       case('l'):
         *logfile = strdup(optarg);
@@ -127,9 +133,10 @@ void parseOptions(int argc, char*argv[], char **headers, char **keys, unsigned l
         break;
       default: printOptions(); exit(0);
     }
+  }
 
   // All arguments are required
-  if (!seth || !setk || !sets || !setd || !setp || !setl) {
+  if (!seth || !setk || !sets || !setd || !setp || !setl || !setb) {
     printOptions();
     exit(EXIT_FAILURE);
   }
@@ -189,104 +196,76 @@ int init_network(int port) {
 }
 
 /**
- * Open a connection to the ringbuffer for each stream
+ * Open a connection to the ringbuffer
  * The metadata (header block) is read from file
- * @param {dada_hdu_t **} hdu pointer to an array of HDU pointers to connect
- * @param {char *} headers String containing the header file names to read
- * @param {char *} keys String containing the shared memeory keys as hexadecimal numbers
- * @returns {int} The number of opened HDU streams
+ * @param {dada_hdu_t **} hdu pointer to a pointer of HDU
+ * @param {char *} header String containing the header file names to read
+ * @param {char *} key String containing the shared memeory keys as hexadecimal numbers
+ * @param {int} padded_size Stride of data array, needed to check buffer size
+ * @returns {hdu *} A connected HDU
  */
-int init_ringbuffer(dada_hdu_t **hdu, char *headers, char *keys) {
-  int nheaders;
-  char *header;
+dada_hdu_t *init_ringbuffer(char *header, char *key, int padded_size) {
   char *buf;
   uint64_t bufsz;
+  uint64_t nbufs;
+  dada_hdu_t *hdu;
 
-  int nkeys;
-  char *key;
   key_t shmkey;
 
   multilog_t* multilog = NULL; // TODO: See if this is used in anyway by dada
   char writemode='W';     // needs to be a capital
 
-  // create a hdu for each key in the keys string
-  nkeys = 0;
-  key = strtok(keys, " ");
+  // create hdu
+  hdu = dada_hdu_create (multilog);
 
-  LOG("Mapping between HDUs and keys\n");
-  while(key) {
-    // create hdu
-    hdu[nkeys] = dada_hdu_create (multilog);
+  // init key
+  sscanf(key, "%x", &shmkey);
+  dada_hdu_set_key(hdu, shmkey);
+  LOG("psrdada SHMKEY: %s\n", key);
 
-    // init key
-    sscanf(key, "%x", &shmkey);
-    dada_hdu_set_key(hdu[nkeys], shmkey);
-    LOG("HDU %02i: key: %s\n", nkeys, key);
-
-    // connect
-    if (dada_hdu_connect (hdu[nkeys]) < 0) {
-      LOG("ERROR in dada_hdu_connect\n");
-      exit(EXIT_FAILURE);
-    }
-
-    // Make data buffers readable
-    if (dada_hdu_lock_write_spec (hdu[nkeys], writemode) < 0) {
-      LOG("ERROR in dada_hdu_lock_write_spec\n");
-      exit(EXIT_FAILURE);
-    }
-
-    // next key
-    key = strtok(NULL, " ");
-    nkeys++;
-  }
-
-  // read a hdu header for each header the headers string
-  nheaders = 0;
-  header = strtok(headers, " ");
-
-  LOG("Mapping between HDUs and headers\n");
-  while(header && nheaders < nkeys) {
-    // get dada buffer size
-    bufsz = ipcbuf_get_bufsz (hdu[nheaders]->header_block);
-
-    // get write address
-    buf = ipcbuf_get_next_write (hdu[nheaders]->header_block);
-    if (! buf) {
-      LOG("ERROR. Get next header block error\n");
-      exit(EXIT_FAILURE);
-    }
-
-    // read header from file
-    if (fileread (header, buf, bufsz) < 0) { 
-      LOG("ERROR. Cannot read header from %s\n", header);
-      exit(EXIT_FAILURE);
-    }
-
-    // tell the ringbuffer the header is filled
-    if (ipcbuf_mark_filled (hdu[nheaders]->header_block, bufsz) < 0) {
-      LOG("ERROR. Could not mark filled header block\n");
-      exit(EXIT_FAILURE);
-    }
-    LOG("HDU %02i: header: %s\n", nheaders, header);
-
-    // next header
-    header = strtok(NULL, " ");
-    nheaders++;
-  }
-
-  // check we read a header for each key
-  if (nheaders != nkeys) {
-    LOG("ERROR. Not enough headers for given keys: headers=%i keys=%i\n", nheaders, nkeys);
-    exit(EXIT_FAILURE);
-  }
-  // check if we read all headers, ie. no header remaining
-  if (header != NULL) {
-    LOG("ERROR: Too many headers, need only %i\n", nkeys);
+  // connect
+  if (dada_hdu_connect (hdu) < 0) {
+    LOG("ERROR in dada_hdu_connect\n");
     exit(EXIT_FAILURE);
   }
 
-  LOG("Initialized ring buffer using %d streams\n", nheaders);
-  return nheaders;
+  // Make data buffers readable
+  if (dada_hdu_lock_write_spec (hdu, writemode) < 0) {
+    LOG("ERROR in dada_hdu_lock_write_spec\n");
+    exit(EXIT_FAILURE);
+  }
+
+  // get dada buffer size
+  bufsz = ipcbuf_get_bufsz (hdu->header_block);
+
+  // get write address
+  buf = ipcbuf_get_next_write (hdu->header_block);
+  if (! buf) {
+    LOG("ERROR. Get next header block error\n");
+    exit(EXIT_FAILURE);
+  }
+
+  // read header from file
+  if (fileread (header, buf, bufsz) < 0) { 
+    LOG("ERROR. Cannot read header from %s\n", header);
+    exit(EXIT_FAILURE);
+  }
+
+  // tell the ringbuffer the header is filled
+  if (ipcbuf_mark_filled (hdu->header_block, bufsz) < 0) {
+    LOG("ERROR. Could not mark filled header block\n");
+    exit(EXIT_FAILURE);
+  }
+  LOG("psrdada HEADER: %s\n", header);
+
+  dada_hdu_db_addresses(hdu, &nbufs, &bufsz);
+
+  if (bufsz < NPACKETSSEGMENT * padded_size) {
+    LOG("ERROR. ring buffer data block too small, should be at least %i\n", NPACKETSSEGMENT * padded_size);
+    exit(EXIT_FAILURE);
+  }
+
+  return hdu;
 }
 
 int main(int argc, char** argv) {
@@ -295,25 +274,20 @@ int main(int argc, char** argv) {
   int sockfd;               // socket file descriptor
 
   // ringbuffer state
-  dada_hdu_t *hdu[MAX_STREAMS];
-#ifdef MULTIBAND
-  int band_to_hdu[MAX_BANDS];
-#endif
-  int bands_present[MAX_BANDS];
+  dada_hdu_t *hdu;
+  char *buf; // pointer to current buffer
 
   // run parameters
   int duration;            // run time in seconds
-  int nstreams;            // Number of HDU streams opened
-  long npackets;           // Number of packets to read
   float missing_pct;       // Number of packets missed in percentage of expected number
-  unsigned long missing;   // Number of packets missed
-  unsigned long notime;    // Number of packets without valid timestamp
-  unsigned long starttime; // Starttime (start block) of the observation in units of 1/781250 seconds after 1970
-  unsigned long endtime;   // Endtime (end block) of the observation in units of 1/781250 seconds after 1970
+  int missing;             // Number of packets missed
+  int starttime;           // Starttime
+  int endtime;             // Endtime
+  int padded_size;
 
   // local vars
-  char *headers;
-  char *keys;
+  char *header;
+  char *key;
   char *logfile;
   const char mode = 'w';
 
@@ -323,14 +297,12 @@ int main(int argc, char** argv) {
   struct mmsghdr msgs[MMSG_VLEN];      // multimessage hearders for recvmmsg
 
   packet_t *packet;            // Pointer to current packet
-  unsigned long timestamp;     // Current timestamp
-  unsigned short band;         // Current band
-  unsigned short stream;       // HDU stream
-  unsigned long previous_stamp[MAX_BANDS];   // last encountered timestamp per band
-  unsigned long packets_per_band[MAX_BANDS]; // number of records processed per band
+  unsigned short cb_index = 999; // Current compound beam index (fixed per run)
+  int timestamp;               // Current timestamp
+  unsigned long packets_per_segment; // number of records processed per time segment
 
   // parse commandline
-  parseOptions(argc, argv, &headers, &keys, &starttime, &duration, &port, &logfile);
+  parseOptions(argc, argv, &header, &key, &starttime, &duration, &port, &padded_size, &logfile);
 
   // set up logging
   if (logfile) {
@@ -344,12 +316,11 @@ int main(int argc, char** argv) {
   }
 
   // calculate run length
-  npackets = RECSPERSECOND * duration;
-  endtime = starttime + npackets * NBLOCKS;
+  endtime = starttime + duration;
   LOG("fill ringbuffer version: " VERSION "\n");
-  LOG("Starttime = %ld\n", starttime);
-  LOG("Endtime = %ld\n", endtime);
-  LOG("Planning to read %i (s) x %i (rec/s) = %ld records\n", duration, RECSPERSECOND, npackets);
+  LOG("Starttime = %i\n", starttime);
+  LOG("Endtime = %i\n", endtime);
+  LOG("Duration = %i\n", duration);
 
   // sockets
   LOG("Opening network port %i\n", port);
@@ -369,21 +340,16 @@ int main(int argc, char** argv) {
 
   // ring buffer
   LOG("Connecting to ringbuffer\n");
-  nstreams = init_ringbuffer(hdu, headers, keys);
-  free(headers);
-  free(keys);
+  hdu = init_ringbuffer(header, key, padded_size);
+  free(header);
+  free(key);
 
-  // clear band mapping etc.
-  for (band=0; band<MAX_BANDS; band++) {
-    bands_present[band] = 0;
-    packets_per_band[band] = 0;
-  }
-  notime = 0;
+  // clear packet counters
+  packets_per_segment = 0;
 
   // start at the end of the packet buffer, so the main loop starts with a recvmmsg call
   packet_idx = MMSG_VLEN - 1;
   packet = &packet_buffer[packet_idx];
-
 
   // ============================================================
   // idle till starttime, but keep track of which bands there are
@@ -407,52 +373,26 @@ int main(int argc, char** argv) {
     }
     packet = &packet_buffer[packet_idx];
 
-    // mark this band as present
-    band = bswap_16(packet->band);
-    if (band >= MAX_BANDS) {
-      LOG("ERROR. Band number higher than maximum value: %i >= %i\n", band, MAX_BANDS);
-      LOG("ERROR. Increase MAX_BANDS and recompile.\n");
-      exit(EXIT_FAILURE);
-    }
-    bands_present[band] = 1;
+    // keep track of compound beams
+    cb_index = packet->cb_index;
 
     // keep track of timestamps, 
-    timestamp = bswap_64(packet->timestamp);
-    previous_stamp[band] = timestamp;
+    timestamp = packet->timestamp;
   }
-
-  // map bands to HDU streams
-  stream = 0;
-  for (band=0; band < MAX_BANDS; band++) {
-    if (bands_present[band] == 1) {
-#ifdef MULTIBAND
-      band_to_hdu[band] = stream;
-#endif
-      LOG("Mapping band %i to HDU unit %i\n", band, stream);
-      stream++;
-    }
-  }
-  if (stream != nstreams) {
-    LOG("ERROR Number of bands does not match number of streams: %d and %d\n", stream, nstreams);
-    goto exit;
-  }
-
-#ifdef MULTIBAND
-  // band to stream mapping happens in the main loop below
-#else
-  // always copy to first HDU stream in the ringbuffer;
-  stream = 0;
-#endif
 
   // process the first (already-read) package by moving the packet_idx one back
   // this to compensate for the packet_idx++ statement in the first pass of the mainloop
   packet_idx--;
 
+  //  get a new buffer
+  buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
+  packets_per_segment = 0;
+
   // ============================================================
   // run till endtime
   // ============================================================
  
-  while (timestamp < endtime - NBLOCKS) {
+  while (timestamp < endtime) {
     // go to next packet in the packet buffer
     packet_idx++;
 
@@ -468,60 +408,46 @@ int main(int argc, char** argv) {
     }
     packet = &packet_buffer[packet_idx];
  
-    // check band number
-    band = bswap_16(packet->band);
-    if (bands_present[band] == 0) {
-      LOG("ERROR: unexpected band number %d\n", band);
+    // check compound beam index 
+    if (packet->cb_index != cb_index) {
+      LOG("ERROR: unexpected compound beam index %d\n", packet->cb_index);
       goto exit;
     }
 
-    // check number of blocks
-    if (bswap_16(packet->nblocks) != NBLOCKS) {
-      LOG("Warning: number of blocks in packet is not equal to %d\n", NBLOCKS);
+    // check number of samples_per_packet
+    if (packet->samples_per_packet != RECORDSIZE) {
+      LOG("Warning: incorrect number of samples in the packet %d\n", RECORDSIZE);
       goto exit;
     }
 
-#ifdef MULTIBAND
-    // match band to stream
-    stream = band_to_hdu[band];
-#endif
-
-    // check timestamps
-    timestamp = bswap_64(packet->timestamp);
-    if (timestamp == 0) {
-      // assume it is the expected packet, and set timestamp ourselves
-      timestamp = previous_stamp[band] + NBLOCKS;
-      notime++;
-    }
-
-    // repeatedly add this packet to make up for missed / dropped packets
-    while (previous_stamp[band] < timestamp) {
-      // copy to ringbuffer
-      if (ipcio_write(hdu[stream]->data_block, (char *) packet->record, RECORDSIZE)
-          != RECORDSIZE) {
-        LOG("ERROR. Cannot write requested bytes to SHM\n");
+    // check timestamps:
+    if (packet->timestamp != timestamp) {
+      // start of a new time segment:
+      //  - mark the ringbuffer as filled
+      if (ipcbuf_mark_filled ((ipcbuf_t *)hdu->data_block, NPACKETSSEGMENT * padded_size) < 0) {
+        LOG("ERROR: cannot mark buffer as filled\n");
         goto exit;
       }
-      previous_stamp[band] += NBLOCKS;
+
+      //  - get a new buffer
+      buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
+
+      // - print diagnostics
+      missing = NPACKETSSEGMENT - packets_per_segment;
+      missing_pct = (100.0 * missing) / (1.0 * NPACKETSSEGMENT);
+      LOG("Compound beam %4i: time %i, missing: %6.3f%% (%i)\n", cb_index, timestamp, missing_pct, missing);
+
+      //  - reset the packets counter and timestamp
+      timestamp = packet->timestamp;
+      packets_per_segment = 0;
     }
+
+    // copy to ringbuffer
+    memcpy(&buf[((packet->tab_index * 1536) + packet->channel) * padded_size], &packet->record, RECORDSIZE);
 
     // book keeping
-    packets_per_band[band]++;
-    previous_stamp[band] = timestamp;
+    packets_per_segment++;
   }
-
-  // print diagnostics
-  LOG("Packets read:\n");
-  for (band=0; band < MAX_BANDS; band++) {
-    if (bands_present[band] == 1) {
-      missing = npackets - packets_per_band[band];
-      missing_pct = (100.0 * missing) / (1.0 * npackets);
-      LOG("Band %4i: %10ld out of %10ld, missing %10ld [%5.2f%%] records\n",
-          band, packets_per_band[band], npackets, missing, missing_pct);
-    }
-  }
-  LOG("Number of packets without timestamp: %li\n", notime);
-  LOG("NOTE: Missing packets are filled in by repeatedly copying current packet.\n");
 
   // clean up and exit
 exit:
