@@ -87,7 +87,7 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *startti
   int c;
 
   int seth=0, setk=0, sets=0, setd=0, setp=0, setb=0, setl=0;
-  while((c=getopt(argc,argv,"h:k:s:d:p:l:"))!=-1) {
+  while((c=getopt(argc,argv,"h:k:s:d:p:b:l:"))!=-1) {
     switch(c) {
       // -h <heaer_file>
       case('h'):
@@ -298,7 +298,7 @@ int main(int argc, char** argv) {
 
   packet_t *packet;            // Pointer to current packet
   unsigned short cb_index = 999; // Current compound beam index (fixed per run)
-  int timestamp;               // Current timestamp
+  int curr_time;                 // Current timestamp
   unsigned long packets_per_segment; // number of records processed per time segment
 
   // parse commandline
@@ -355,11 +355,12 @@ int main(int argc, char** argv) {
   // idle till starttime, but keep track of which bands there are
   // ============================================================
  
-  timestamp = 0;
+  curr_time = 0;
   packet_idx = MMSG_VLEN - 1;
-  while (timestamp < starttime) {
+  while (curr_time < starttime) {
     // go to next packet in the packet buffer
     packet_idx++;
+printf("Looping packet=%i time=%i\n", packet_idx, curr_time);
 
     // did we reach the end of the packet buffer?
     if (packet_idx == MMSG_VLEN) {
@@ -370,14 +371,19 @@ int main(int argc, char** argv) {
       }
       // go to start of buffer
       packet_idx = 0;
+printf("Read new batch of messages\n" );
     }
     packet = &packet_buffer[packet_idx];
 
     // keep track of compound beams
     cb_index = packet->cb_index;
 
-    // keep track of timestamps, 
-    timestamp = packet->timestamp;
+    // keep track of timestamps
+      printf("Received time=%i\n", packet->timestamp);
+    if (curr_time != packet->timestamp) {
+      printf("Received time=%i\n", packet->timestamp);
+    }
+    curr_time = packet->timestamp;
   }
 
   // process the first (already-read) package by moving the packet_idx one back
@@ -388,11 +394,13 @@ int main(int argc, char** argv) {
   buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
   packets_per_segment = 0;
 
+  LOG("Receiving CB_INDEX=%i\n", cb_index);
+
   // ============================================================
   // run till endtime
   // ============================================================
  
-  while (timestamp < endtime) {
+  while (curr_time < endtime) {
     // go to next packet in the packet buffer
     packet_idx++;
 
@@ -421,7 +429,7 @@ int main(int argc, char** argv) {
     }
 
     // check timestamps:
-    if (packet->timestamp != timestamp) {
+    if (packet->timestamp != curr_time) {
       // start of a new time segment:
       //  - mark the ringbuffer as filled
       if (ipcbuf_mark_filled ((ipcbuf_t *)hdu->data_block, NPACKETSSEGMENT * padded_size) < 0) {
@@ -435,14 +443,15 @@ int main(int argc, char** argv) {
       // - print diagnostics
       missing = NPACKETSSEGMENT - packets_per_segment;
       missing_pct = (100.0 * missing) / (1.0 * NPACKETSSEGMENT);
-      LOG("Compound beam %4i: time %i, missing: %6.3f%% (%i)\n", cb_index, timestamp, missing_pct, missing);
+      LOG("Compound beam %4i: time %i, missing: %6.3f%% (%i)\n", cb_index, curr_time, missing_pct, missing);
 
       //  - reset the packets counter and timestamp
-      timestamp = packet->timestamp;
+      curr_time = packet->timestamp;
       packets_per_segment = 0;
     }
 
     // copy to ringbuffer
+    // TODO: subtime offset
     memcpy(&buf[((packet->tab_index * 1536) + packet->channel) * padded_size], &packet->record, RECORDSIZE);
 
     // book keeping
