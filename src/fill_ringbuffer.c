@@ -31,10 +31,8 @@
  *  - one HDU. 
  *
  * Send on to ringbuffer a single second of data as a three dimensional array:
- * [tab_index][channel][record] of sizes [0..11][0..1535][0..paddedsize] = 450432 kB for a ringbuffer page
+ * [tab_index][channel][record] of sizes [0..11][0..1535][0..paddedsize] = 18432 * (paddedsize+1) for a ringbuffer page
  *
- * swap buffers when timestamp[0] changes: check with daniel what the timestamp actually means.
- * timestamp[1] [0..3] value*6250 = offset in the large array
  */
 
 #define NPACKETSSEGMENT (12*1536*4)
@@ -61,8 +59,7 @@ typedef struct {
    * midnight of the 1st of January 1970, while the second number contains
    * the unit of Number of Samples per Packet the packet is associated with.
    */
-  int timestamp;
-  int subtime;
+  unsigned long timestamp;
   unsigned long flags[3];
   unsigned char record[RECORDSIZE];
 } packet_t;
@@ -296,10 +293,11 @@ int main(int argc, char** argv) {
   struct iovec iov[MMSG_VLEN];         // IO vec structure for recvmmsg
   struct mmsghdr msgs[MMSG_VLEN];      // multimessage hearders for recvmmsg
 
-  packet_t *packet;            // Pointer to current packet
-  unsigned short cb_index = 999; // Current compound beam index (fixed per run)
-  int curr_time;                 // Current timestamp
-  unsigned long packets_per_segment; // number of records processed per time segment
+  packet_t *packet;                 // Pointer to current packet
+  unsigned short cb_index = 999;    // Current compound beam index (fixed per run)
+  unsigned long curr_time;          // Current timestamp
+  unsigned int curr_segment;
+  unsigned long packets_in_segment; // number of records processed per time segment
 
   // parse commandline
   parseOptions(argc, argv, &header, &key, &starttime, &duration, &port, &padded_size, &logfile);
@@ -345,7 +343,7 @@ int main(int argc, char** argv) {
   free(key);
 
   // clear packet counters
-  packets_per_segment = 0;
+  packets_in_segment = 0;
 
   // start at the end of the packet buffer, so the main loop starts with a recvmmsg call
   packet_idx = MMSG_VLEN - 1;
@@ -377,10 +375,7 @@ int main(int argc, char** argv) {
     cb_index = packet->cb_index;
 
     // keep track of timestamps
-    if (curr_time != packet->timestamp) {
-      printf("Received time=%i\n", packet->timestamp);
-    }
-    curr_time = packet->timestamp;
+    curr_time = bswap_64(packet->timestamp);
   }
 
   // process the first (already-read) package by moving the packet_idx one back
@@ -389,7 +384,7 @@ int main(int argc, char** argv) {
 
   //  get a new buffer
   buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
-  packets_per_segment = 0;
+  packets_in_segment = 0;
 
   LOG("STARTING WITH CB_INDEX=%i\n", cb_index);
 
@@ -426,7 +421,9 @@ int main(int argc, char** argv) {
     }
 
     // check timestamps:
-    if (packet->timestamp != curr_time) {
+    curr_time = bswap_64(packet->timestamp);
+    segment = (curr_time - starttime) / 800000;
+    if (segment != curr_segment) {
       // start of a new time segment:
       //  - mark the ringbuffer as filled
       if (ipcbuf_mark_filled ((ipcbuf_t *)hdu->data_block, NPACKETSSEGMENT * padded_size) < 0) {
@@ -438,22 +435,20 @@ int main(int argc, char** argv) {
       buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
 
       // - print diagnostics
-      missing = NPACKETSSEGMENT - packets_per_segment;
+      missing = NPACKETSSEGMENT - packets_in_segment;
       missing_pct = (100.0 * missing) / (1.0 * NPACKETSSEGMENT);
       LOG("Compound beam %4i: time %i, missing: %6.3f%% (%i)\n", cb_index, curr_time, missing_pct, missing);
 
-      //  - reset the packets counter and timestamp
-      curr_time = packet->timestamp;
-      packets_per_segment = 0;
+      //  - reset the packets counter and segment number
+      curr_segment = segment
+      packets_in_segment = 0;
     }
 
     // copy to ringbuffer
-    // TODO: subtime offset
-    // memcpy(&buf[((packet->tab_index * 1536) + packet->channel) * padded_size], &packet->record, RECORDSIZE);
-    memcpy(buf, packet->record, RECORDSIZE);
+    memcpy(&buf[((packet->tab_index * 1536) + packet->channel) * padded_size + (curr_time % 200000) * RECORDSIZE], packet->record, RECORDSIZE);
 
     // book keeping
-    packets_per_segment++;
+    packets_in_segment++;
   }
 
   // clean up and exit

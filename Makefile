@@ -48,7 +48,7 @@ test: src/send
 	taskset 2 bin/fill_ringbuffer -k dada -h test/header -s 50 -d 15 -p 7469 -b 25088 -l test/log
 	# clean up
 	-$(BIN_DIR)/dada_db -d
-	-killall -u `whoami` send
+	-killall -u `whoami` src/send
 
 fake: src/send
 	# delete old ringbuffer
@@ -58,7 +58,7 @@ fake: src/send
 	# start spewing packages
 	taskset 4 src/send &
 	# test the fill_ringbuffer program
-	taskset 2 bin/fill_ringbuffer -k dada -h test/header -s 50 -d 15 -p 7469 -b 25088 -l test/log
+	taskset 2 bin/fill_ringbuffer -k dada -h test/header -s 50 -d 1000 -p 7469 -b 25088 -l test/log
 	# clean up
 	-$(BIN_DIR)/dada_db -d
-	-killall -u `whoami` send
+	-killall -u `whoami` src/send
