@@ -39,13 +39,26 @@ test: src/send
 	# delete old ringbuffer
 	-$(BIN_DIR)/dada_db -d
 	# start a new ringbuffer on key 'dada' with 512 packets per buffer x 4840 byes = 1239040
-	$(BIN_DIR)/dada_db -p -k dada -n 4 -b 460800000
+	$(BIN_DIR)/dada_db -p -k dada -n 4 -b 1849688064
 	# start a scrubber to empty the buffer (this fakes the pipeline reading data from the buffer)
 	$(BIN_DIR)/dada_dbscrubber -v -k dada &
 	# start spewing packages
 	taskset 4 src/send &
 	# test the fill_ringbuffer program
-	taskset 2 bin/fill_ringbuffer -k dada -h test/header -s 50 -d 5 -p 7469 -b 6250 -l test/log
+	taskset 2 bin/fill_ringbuffer -k dada -h test/header -s 50 -d 15 -p 7469 -b 25088 -l test/log
 	# clean up
 	-$(BIN_DIR)/dada_db -d
+	-killall -u `whoami` send
 
+fake: src/send
+	# delete old ringbuffer
+	-$(BIN_DIR)/dada_db -d
+	# start a new ringbuffer on key 'dada' with 512 packets per buffer x 4840 byes = 1239040
+	$(BIN_DIR)/dada_db -p -k dada -n 4 -b 1849688064
+	# start spewing packages
+	taskset 4 src/send &
+	# test the fill_ringbuffer program
+	taskset 2 bin/fill_ringbuffer -k dada -h test/header -s 50 -d 15 -p 7469 -b 25088 -l test/log
+	# clean up
+	-$(BIN_DIR)/dada_db -d
+	-killall -u `whoami` send

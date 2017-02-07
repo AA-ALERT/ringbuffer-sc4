@@ -45,28 +45,6 @@ typedef struct {
   unsigned char record[6250];
 } packet_t;
 
-struct addrinfo *connect_to_client(int *sockfd) {
-  struct addrinfo hints, *servinfo;
-
-  // first, load up address structs with getaddrinfo():
-  memset(&hints, 0, sizeof hints);
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_DGRAM;
-
-  getaddrinfo(NULL, "4000", &hints, &servinfo);
-
-  // make a socket:
-  *sockfd = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
-
-  // bind local address
-  if(bind(*sockfd, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
-    perror(NULL);
-    exit(1);
-  }
-
-  return servinfo;
-}
-
 int main(int argc , char *argv[]) {
   int sockfd;
   struct addrinfo hints, *servinfo, *p;
@@ -76,7 +54,7 @@ int main(int argc , char *argv[]) {
   hints.ai_socktype = SOCK_DGRAM;
 
   char service[256];
-  snprintf(service, 255, "%i", 4000);
+  snprintf(service, 255, "%i", 7469);
 
   // find possible connections
   if(getaddrinfo("127.0.0.1", service, &hints, &servinfo) != 0) {
@@ -127,7 +105,7 @@ int main(int argc , char *argv[]) {
   int counter = 0;
   int prev_time = 0, curr_time = 0;
   unsigned long dropped = 0;       // deliberately dropped packets
-  while(counter< 10000000) {
+  while(1) {
     for(packet_idx=0; packet_idx < MMSG_VLEN; packet_idx++) {
       packet = &packet_buffer[packet_idx];
 
@@ -141,7 +119,6 @@ int main(int argc , char *argv[]) {
 
       curr_time = counter / (12 * 1536);
       if (curr_time != prev_time) {
-        printf("Sending time: %i\n", curr_time);
         prev_time = curr_time;
       }
       packet->timestamp = counter / (12 * 1536);

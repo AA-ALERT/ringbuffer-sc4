@@ -64,7 +64,7 @@ typedef struct {
   int timestamp;
   int subtime;
   unsigned long flags[3];
-  unsigned char record[6250];
+  unsigned char record[RECORDSIZE];
 } packet_t;
 
 // #define LOG(...) {fprintf(logio, __VA_ARGS__)}; 
@@ -360,7 +360,6 @@ int main(int argc, char** argv) {
   while (curr_time < starttime) {
     // go to next packet in the packet buffer
     packet_idx++;
-printf("Looping packet=%i time=%i\n", packet_idx, curr_time);
 
     // did we reach the end of the packet buffer?
     if (packet_idx == MMSG_VLEN) {
@@ -371,7 +370,6 @@ printf("Looping packet=%i time=%i\n", packet_idx, curr_time);
       }
       // go to start of buffer
       packet_idx = 0;
-printf("Read new batch of messages\n" );
     }
     packet = &packet_buffer[packet_idx];
 
@@ -379,7 +377,6 @@ printf("Read new batch of messages\n" );
     cb_index = packet->cb_index;
 
     // keep track of timestamps
-      printf("Received time=%i\n", packet->timestamp);
     if (curr_time != packet->timestamp) {
       printf("Received time=%i\n", packet->timestamp);
     }
@@ -394,7 +391,7 @@ printf("Read new batch of messages\n" );
   buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
   packets_per_segment = 0;
 
-  LOG("Receiving CB_INDEX=%i\n", cb_index);
+  LOG("STARTING WITH CB_INDEX=%i\n", cb_index);
 
   // ============================================================
   // run till endtime
@@ -452,7 +449,8 @@ printf("Read new batch of messages\n" );
 
     // copy to ringbuffer
     // TODO: subtime offset
-    memcpy(&buf[((packet->tab_index * 1536) + packet->channel) * padded_size], &packet->record, RECORDSIZE);
+    // memcpy(&buf[((packet->tab_index * 1536) + packet->channel) * padded_size], &packet->record, RECORDSIZE);
+    memcpy(buf, packet->record, RECORDSIZE);
 
     // book keeping
     packets_per_segment++;
