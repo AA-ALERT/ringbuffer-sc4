@@ -13,36 +13,38 @@
 #include <sys/socket.h>
 #include <netdb.h>
 
-#define PACKETSIZE 6356           // Size of the packet, including the header in bytes
-#define RECORDSIZE 6250           // Size of the record = packet - header in bytes
-#define PACKHEADER 106            // Size of the packet header = PACKETSIZE-RECORDSIZE in bytes
+#define PACKHEADER 114                   // Size of the packet header = PACKETSIZE-PAYLOADSIZE in bytes
+
+#define PACKETSIZE_STOKESI  6364         // Size of the packet, including the header in bytes
+#define PAYLOADSIZE_STOKESI 6250         // Size of the record = packet - header in bytes
+
+#define PACKETSIZE_STOKESIQUV  8114      // Size of the packet, including the header in bytes
+#define PAYLOADSIZE_STOKESIQUV 8000      // Size of the record = packet - header in bytes
+#define PAYLOADSIZE_MAX        8000      // Maximum of payload size of I, IQUV
+
 #define MMSG_VLEN  256            // Batch message into single syscal using recvmmsg()
 
 #define UMSPPACKET (1.0)
-
 
 /*
  * Header description based on:
  * ARTS Interface Specification from BF to SC3+4
  * ASTRON_SP_066_InterfaceSpecificationSC34.pdf
+ * revision 2.0
  */
 typedef struct {
-  unsigned char marker_byte;         // SC3: 130, SC4: 140
-  unsigned char format_version;      // Version: 0
+  unsigned char marker_byte;         // See table 3 in PDF, page 6
+  unsigned char format_version;      // Version: 1
   unsigned char cb_index;            // [0,36] one compound beam per fill_ringbuffer instance:: ignore
   unsigned char tab_index;           // [0,11] all tabs per fill_ringbuffer instance
-  unsigned short channel;            // [0,1535] all channels per fill_ringbuffer instance
-  unsigned short samples_per_packet; // RECORDSIZE (6250)
-  /**
-   * contains two unsigned integer numbers (each of 4 bytes); the
-   * first number contains the number of time units that have elapsed since the
-   * midnight of the 1st of January 1970, while the second number contains
-   * the unit of Number of Samples per Packet the packet is associated with.
-   */
-  int timestamp;
-  int subtime;
+  unsigned short channel_index;      // [0,1535] all channels per fill_ringbuffer instance
+  unsigned short payload_size;       // Stokes I: 6250, IQUV: 8000
+  unsigned long timestamp;           // units of 1.28 us, since 1970-01-01 00:00.000 
+  unsigned char sequence_number;     // SC3: Stokes I: 0-1, Stokes IQUV: 0-24
+                                     // SC4: Stokes I: 0-3, Stokes IQUV: 0-49
+  unsigned char reserved[7];
   unsigned long flags[3];
-  unsigned char record[6250];
+  unsigned char record[PAYLOADSIZE_MAX];
 } packet_t;
 
 int main(int argc , char *argv[]) {
@@ -93,7 +95,7 @@ int main(int argc , char *argv[]) {
   memset(msgs, 0, sizeof(msgs));
   for(packet_idx=0; packet_idx < MMSG_VLEN; packet_idx++) {
     iov[packet_idx].iov_base = (char *) &packet_buffer[packet_idx];
-    iov[packet_idx].iov_len = PACKETSIZE;
+    iov[packet_idx].iov_len = PACKETSIZE_STOKESI;
 
     msgs[packet_idx].msg_hdr.msg_name    = NULL; // we don't need to know who sent the data
     msgs[packet_idx].msg_hdr.msg_iov     = &iov[packet_idx];
@@ -103,33 +105,29 @@ int main(int argc , char *argv[]) {
 
   packet_t *packet;                // Pointer to current packet
   int counter = 0;
-  int prev_time = 0, curr_time = 0;
+  unsigned long curr_time;          // Current timestamp
   unsigned long dropped = 0;       // deliberately dropped packets
   while(1) {
     for(packet_idx=0; packet_idx < MMSG_VLEN; packet_idx++) {
       packet = &packet_buffer[packet_idx];
 
-      packet->marker_byte = 140;
-      packet->format_version = 0;
+      packet->marker_byte = 0xE0; // case 4 mode 0
+      packet->format_version = 1;
       packet->cb_index = 1;
-      packet->samples_per_packet = RECORDSIZE;
+      packet->payload_size = bswap_16(PAYLOADSIZE_STOKESI);
 
-      packet->channel = counter % 12;
-      packet->tab_index = (counter / 12) % 1536;
+      packet->sequence_number = counter % 4;
+      packet->tab_index = (counter / 4) % 12;
+      packet->channel_index = bswap_16((counter / (4 * 12)) % 1536);
 
-      curr_time = counter / (12 * 1536);
-      if (curr_time != prev_time) {
-        prev_time = curr_time;
-      }
-      packet->timestamp = counter / (12 * 1536);
+      curr_time = counter / (4 * 12 * 1536);
+      packet->timestamp = bswap_64(curr_time);
 
-      if (counter % 12345 == 0) {
-        // deliberately drop some packets
-        counter += 1;
-        dropped++;
-      } else {
-        packet->timestamp = counter / (12 * 1536);
-      }
+      //if (counter % 12345 == 0) {
+      //  // deliberately drop some packets
+      //  counter += 1;
+      //  dropped++;
+      //}
 
       counter += 1;
     }

@@ -20,48 +20,57 @@
 #include "dada_hdu.h"
 #include "futils.h"
 
-#define PACKETSIZE 6356           // Size of the packet, including the header in bytes
-#define RECORDSIZE 6250           // Size of the record = packet - header in bytes
-#define PACKHEADER 106            // Size of the packet header = PACKETSIZE-RECORDSIZE in bytes
+#define PACKHEADER 114                   // Size of the packet header = PACKETSIZE-PAYLOADSIZE in bytes
+
+#define PACKETSIZE_STOKESI  6364         // Size of the packet, including the header in bytes
+#define PAYLOADSIZE_STOKESI 6250         // Size of the record = packet - header in bytes
+
+#define PACKETSIZE_STOKESIQUV  8114      // Size of the packet, including the header in bytes
+#define PAYLOADSIZE_STOKESIQUV 8000      // Size of the record = packet - header in bytes
+#define PAYLOADSIZE_MAX        8000      // Maximum of payload size of I, IQUV
+
 #define MMSG_VLEN  256            // Batch message into single syscal using recvmmsg()
 
 /* We currently use
  *  - one compound beam per instance
  *  - one instance of fill_ringbuffer connected to
- *  - one HDU. 
+ *  - one HDU
  *
  * Send on to ringbuffer a single second of data as a three dimensional array:
- * [tab_index][channel][record] of sizes [0..11][0..1535][0..paddedsize] = 18432 * (paddedsize+1) for a ringbuffer page
+ * [tab_index][channel][record] of sizes [0..11][0..1535][0..paddedsize-1] = 18432 * paddedsize for a ringbuffer page
  *
+ * SC3: records per 1.024s 12500
+ * SC4: records per 1.024s 25000
  */
 
-#define NPACKETSSEGMENT (12*1536*4)
+#define NTABS       12
+#define NCHANNELS 1536
 
 #define SOCKBUFSIZE 67108864      // Buffer size of socket
 
 FILE *runlog = NULL;
 
+char *science_modes[] = {"I+TAB", "IQUV+TAB", "I+IAB", "IQUV+IAB"};
+
 /*
  * Header description based on:
  * ARTS Interface Specification from BF to SC3+4
  * ASTRON_SP_066_InterfaceSpecificationSC34.pdf
+ * revision 2.0
  */
 typedef struct {
-  unsigned char marker_byte;         // SC3: 130, SC4: 140
-  unsigned char format_version;      // Version: 0
+  unsigned char marker_byte;         // See table 3 in PDF, page 6
+  unsigned char format_version;      // Version: 1
   unsigned char cb_index;            // [0,36] one compound beam per fill_ringbuffer instance:: ignore
   unsigned char tab_index;           // [0,11] all tabs per fill_ringbuffer instance
-  unsigned short channel;            // [0,1535] all channels per fill_ringbuffer instance
-  unsigned short samples_per_packet; // RECORDSIZE (6250)
-  /**
-   * contains two unsigned integer numbers (each of 4 bytes); the
-   * first number contains the number of time units that have elapsed since the
-   * midnight of the 1st of January 1970, while the second number contains
-   * the unit of Number of Samples per Packet the packet is associated with.
-   */
-  unsigned long timestamp;
+  unsigned short channel_index;      // [0,1535] all channels per fill_ringbuffer instance
+  unsigned short payload_size;       // Stokes I: 6250, IQUV: 8000
+  unsigned long timestamp;           // units of 1.28 us, since 1970-01-01 00:00.000 
+  unsigned char sequence_number;     // SC3: Stokes I: 0-1, Stokes IQUV: 0-24
+                                     // SC4: Stokes I: 0-3, Stokes IQUV: 0-49
+  unsigned char reserved[7];
   unsigned long flags[3];
-  unsigned char record[RECORDSIZE];
+  unsigned char record[PAYLOADSIZE_MAX];
 } packet_t;
 
 // #define LOG(...) {fprintf(logio, __VA_ARGS__)}; 
@@ -70,9 +79,8 @@ typedef struct {
 /**
  * Print commandline optinos
  */
-void printOptions()
-{
-  printf("usage: fill_ringbuffer -h <header file> -k <hexadecimal key> -s <starttime seconds after 1970> -d <duration (s)> -p <port> -l <logfile>\n");
+void printOptions() {
+  printf("usage: fill_ringbuffer -h <header file> -k <hexadecimal key> -c <science case> -s <starttime seconds after 1970> -d <duration (s)> -p <port> -l <logfile>\n");
   printf("e.g. fill_ringbuffer -h \"header1.txt\" -k 10 -s 11565158400000 -d 3600 -p 4000 -l log.txt\n");
   return;
 }
@@ -80,11 +88,11 @@ void printOptions()
 /**
  * Parse commandline
  */
-void parseOptions(int argc, char*argv[], char **header, char **key, int *starttime, int *duration, int *port, int *padded_size, char **logfile) {
+void parseOptions(int argc, char*argv[], char **header, char **key, int *science_case, int *science_mode, int *starttime, int *duration, int *port, int *padded_size, char **logfile) {
   int c;
 
-  int seth=0, setk=0, sets=0, setd=0, setp=0, setb=0, setl=0;
-  while((c=getopt(argc,argv,"h:k:s:d:p:b:l:"))!=-1) {
+  int seth=0, setk=0, sets=0, setd=0, setp=0, setb=0, setl=0, setc=0, setm=0;
+  while((c=getopt(argc,argv,"h:k:s:d:p:b:l:c:m:"))!=-1) {
     switch(c) {
       // -h <heaer_file>
       case('h'):
@@ -117,7 +125,7 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *startti
         setp=1;
         break;
 
-      // -b padded size (bytes)
+      // -b padded_size (bytes)
       case('b'):
         *padded_size = atoi(optarg);
         setb=1;
@@ -128,12 +136,35 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *startti
         *logfile = strdup(optarg);
         setl=1;
         break;
-      default: printOptions(); exit(0);
+
+      // -c case
+      case('c'):
+        *science_case = atoi(optarg);
+        setc=1;
+        if (*science_case < 3 || *science_case > 4) {
+          printOptions();
+          exit(0);
+        }
+        break;
+
+      // -m mode
+      case('m'):
+        *science_mode = atoi(optarg);
+        setm=1;
+        if (*science_mode < 0 || *science_mode > 4) {
+          printOptions();
+          exit(0);
+        }
+        break;
+
+      default:
+        printOptions();
+        exit(0);
     }
   }
 
   // All arguments are required
-  if (!seth || !setk || !sets || !setd || !setp || !setl || !setb) {
+  if (!seth || !setk || !sets || !setd || !setp || !setl || !setb || !setc || !setm) {
     printOptions();
     exit(EXIT_FAILURE);
   }
@@ -257,8 +288,8 @@ dada_hdu_t *init_ringbuffer(char *header, char *key, int padded_size) {
 
   dada_hdu_db_addresses(hdu, &nbufs, &bufsz);
 
-  if (bufsz < NPACKETSSEGMENT * padded_size) {
-    LOG("ERROR. ring buffer data block too small, should be at least %i\n", NPACKETSSEGMENT * padded_size);
+  if (bufsz < NTABS * NCHANNELS * padded_size) {
+    LOG("ERROR. ring buffer data block too small, should be at least %i\n", NTABS * NCHANNELS * padded_size);
     exit(EXIT_FAILURE);
   }
 
@@ -268,7 +299,7 @@ dada_hdu_t *init_ringbuffer(char *header, char *key, int padded_size) {
 int main(int argc, char** argv) {
   // network state
   int port;                 // port number
-  int sockfd;               // socket file descriptor
+  int sockfd = -1;          // socket file descriptor
 
   // ringbuffer state
   dada_hdu_t *hdu;
@@ -276,6 +307,8 @@ int main(int argc, char** argv) {
 
   // run parameters
   int duration;            // run time in seconds
+  int science_case;        // 3 or 4
+  int science_mode;        // 0: I+TAB, 1: IQUV+TAB, 2: I+IAB, 3: IQUV+IAB
   float missing_pct;       // Number of packets missed in percentage of expected number
   int missing;             // Number of packets missed
   int starttime;           // Starttime
@@ -294,13 +327,14 @@ int main(int argc, char** argv) {
   struct mmsghdr msgs[MMSG_VLEN];      // multimessage hearders for recvmmsg
 
   packet_t *packet;                 // Pointer to current packet
-  unsigned short cb_index = 999;    // Current compound beam index (fixed per run)
+  unsigned char cb_index = 255;     // Current compound beam index (fixed per run)
+  unsigned short curr_channel;      // Current channel index
   unsigned long curr_time;          // Current timestamp
-  unsigned int curr_segment;
-  unsigned long packets_in_segment; // number of records processed per time segment
+  unsigned long sequence_time;      // Timestamp for current sequnce
+  unsigned long packets_in_buffer;  // number of records processed per time segment
 
   // parse commandline
-  parseOptions(argc, argv, &header, &key, &starttime, &duration, &port, &padded_size, &logfile);
+  parseOptions(argc, argv, &header, &key, &science_case, &science_mode, &starttime, &duration, &port, &padded_size, &logfile);
 
   // set up logging
   if (logfile) {
@@ -316,9 +350,71 @@ int main(int argc, char** argv) {
   // calculate run length
   endtime = starttime + duration;
   LOG("fill ringbuffer version: " VERSION "\n");
+  LOG("Science case = %i\n", science_case);
+  LOG("Science mode = %i [ %s ]\n", science_mode, science_modes[science_mode]);
   LOG("Starttime = %i\n", starttime);
   LOG("Endtime = %i\n", endtime);
   LOG("Duration = %i\n", duration);
+
+  unsigned char expected_marker_byte = 0;
+  unsigned char complete_sequence = 255;
+  unsigned short expected_payload = 0;
+  if (science_case == 3) {
+    switch (science_mode) {
+      case 0:
+        expected_marker_byte = 0xD0; // I with TAB
+        complete_sequence = 2;
+        expected_payload = PAYLOADSIZE_STOKESI;
+        break;
+
+      case 1:
+        expected_marker_byte = 0xD1; // IQUV with TAB
+        complete_sequence = 25;
+        expected_payload = PAYLOADSIZE_STOKESIQUV;
+        break;
+
+      case 2:
+        expected_marker_byte = 0xD2; // I with IAB
+        complete_sequence = 2;
+        expected_payload = PAYLOADSIZE_STOKESI;
+        break;
+
+      case 3:
+        expected_marker_byte = 0xD3; // IQUV with IAB
+        complete_sequence = 25;
+        expected_payload = PAYLOADSIZE_STOKESIQUV;
+        break;
+    }
+  } else if (science_case == 4) {
+    switch (science_mode) {
+      case 0:
+        expected_marker_byte = 0xE0; // I with TAB
+        complete_sequence = 4;
+        expected_payload = PAYLOADSIZE_STOKESI;
+        break;
+
+      case 1:
+        expected_marker_byte = 0xE1; // IQUV with TAB
+        complete_sequence = 50;
+        expected_payload = PAYLOADSIZE_STOKESIQUV;
+        break;
+
+      case 2:
+        expected_marker_byte = 0xE2; // I with IAB
+        complete_sequence = 4;
+        expected_payload = PAYLOADSIZE_STOKESI;
+        break;
+
+      case 3:
+        expected_marker_byte = 0xE3; // IQUV with IAB
+        complete_sequence = 50;
+        expected_payload = PAYLOADSIZE_STOKESIQUV;
+        break;
+    }
+  } else {
+    LOG("Science case not supported");
+    goto exit;
+  }
 
   // sockets
   LOG("Opening network port %i\n", port);
@@ -328,7 +424,7 @@ int main(int argc, char** argv) {
   memset(msgs, 0, sizeof(msgs));
   for(packet_idx=0; packet_idx < MMSG_VLEN; packet_idx++) {
     iov[packet_idx].iov_base = (char *) &packet_buffer[packet_idx];
-    iov[packet_idx].iov_len = PACKETSIZE;
+    iov[packet_idx].iov_len = expected_payload;
 
     msgs[packet_idx].msg_hdr.msg_name    = NULL; // we don't need to know who sent the data
     msgs[packet_idx].msg_hdr.msg_iov     = &iov[packet_idx];
@@ -343,11 +439,16 @@ int main(int argc, char** argv) {
   free(key);
 
   // clear packet counters
-  packets_in_segment = 0;
+  packets_in_buffer = 0;
 
   // start at the end of the packet buffer, so the main loop starts with a recvmmsg call
   packet_idx = MMSG_VLEN - 1;
   packet = &packet_buffer[packet_idx];
+
+  //  get a new buffer
+  buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
+  packets_in_buffer = 0;
+  sequence_time = curr_time;
 
   // ============================================================
   // idle till starttime, but keep track of which bands there are
@@ -382,10 +483,6 @@ int main(int argc, char** argv) {
   // this to compensate for the packet_idx++ statement in the first pass of the mainloop
   packet_idx--;
 
-  //  get a new buffer
-  buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
-  packets_in_segment = 0;
-
   LOG("STARTING WITH CB_INDEX=%i\n", cb_index);
 
   // ============================================================
@@ -407,26 +504,50 @@ int main(int argc, char** argv) {
       packet_idx = 0;
     }
     packet = &packet_buffer[packet_idx];
- 
+
+    // check marker byte
+    if (packet->marker_byte != expected_marker_byte) {
+      LOG("ERROR: wrong marker byte: %x instead of %x\n", packet->marker_byte, expected_marker_byte);
+      goto exit;
+    }
+
+    // check version
+    if (packet->format_version != 1) {
+      LOG("ERROR: wrong format version: %d instead of %d\n", packet->format_version, 1);
+      goto exit;
+    }
+
     // check compound beam index 
     if (packet->cb_index != cb_index) {
       LOG("ERROR: unexpected compound beam index %d\n", packet->cb_index);
       goto exit;
     }
 
-    // check number of samples_per_packet
-    if (packet->samples_per_packet != RECORDSIZE) {
-      LOG("Warning: incorrect number of samples in the packet %d\n", RECORDSIZE);
+    // check tab index 
+    if (packet->tab_index >= NTABS) {
+      LOG("ERROR: unexpected tab index %d\n", packet->tab_index);
       goto exit;
     }
 
-    // check timestamps:
+    // check channel
+    curr_channel = bswap_16(packet->channel_index);
+    if (curr_channel >= NCHANNELS) {
+      LOG("ERROR: unexpected channel index %d\n", curr_channel);
+      goto exit;
+    }
+
+    // check payload size
+    if (packet->payload_size != bswap_16(expected_payload)) {
+      LOG("Warning: unexpected payload size %d\n", bswap_16(packet->payload_size));
+      goto exit;
+    }
+
+    // check timestamps
     curr_time = bswap_64(packet->timestamp);
-    segment = (curr_time - starttime) / 800000;
-    if (segment != curr_segment) {
+    if (curr_time != sequence_time) {
       // start of a new time segment:
       //  - mark the ringbuffer as filled
-      if (ipcbuf_mark_filled ((ipcbuf_t *)hdu->data_block, NPACKETSSEGMENT * padded_size) < 0) {
+      if (ipcbuf_mark_filled ((ipcbuf_t *)hdu->data_block, NTABS * NCHANNELS * padded_size) < 0) {
         LOG("ERROR: cannot mark buffer as filled\n");
         goto exit;
       }
@@ -435,20 +556,37 @@ int main(int argc, char** argv) {
       buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
 
       // - print diagnostics
-      missing = NPACKETSSEGMENT - packets_in_segment;
-      missing_pct = (100.0 * missing) / (1.0 * NPACKETSSEGMENT);
-      LOG("Compound beam %4i: time %i, missing: %6.3f%% (%i)\n", cb_index, curr_time, missing_pct, missing);
+      missing = complete_sequence * NTABS * NCHANNELS - packets_in_buffer;
+      missing_pct = (100.0 * missing) / (1.0 * complete_sequence * NTABS * NCHANNELS);
+      LOG("Compound beam %4i: time %li, missing: %6.3f%% (%i)\n", cb_index, curr_time, missing_pct, missing);
 
-      //  - reset the packets counter and segment number
-      curr_segment = segment
-      packets_in_segment = 0;
+      //  - reset the packets counter and sequence time
+      packets_in_buffer = 0;
+      sequence_time = curr_time;
     }
 
     // copy to ringbuffer
-    memcpy(&buf[((packet->tab_index * 1536) + packet->channel) * padded_size + (curr_time % 200000) * RECORDSIZE], packet->record, RECORDSIZE);
+    if ((science_mode >> 1) == 0) {
+      // stokes I
+      // packets contains:
+      // timeseries of I
+      // 
+      // ring buffer contains matrix:
+      // [tab][channel][time]
+      memcpy(
+        &buf[((packet->tab_index * NCHANNELS) + curr_channel) * padded_size + packet->sequence_number * expected_payload],
+        packet->record, expected_payload);
+    } else {
+      // stokes IQUV
+      // packets contains:
+      // matrix [time][4 channels c0 .. c3][the 4 components IQUV]
+      // 
+      // TODO: what should be the ring buffer format?
+      exit(EXIT_FAILURE);
+    }
 
     // book keeping
-    packets_in_segment++;
+    packets_in_buffer++;
   }
 
   // clean up and exit
