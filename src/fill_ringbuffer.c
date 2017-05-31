@@ -598,7 +598,7 @@ int main(int argc, char** argv) {
 
   // clean up and exit
 exit:
-  dada_hdu_unlock_write(hdu
+  dada_hdu_unlock_write(hdu);
   dada_hdu_disconnect(hdu);
 
   fflush(stdout);
