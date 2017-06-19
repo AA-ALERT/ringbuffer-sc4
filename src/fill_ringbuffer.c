@@ -566,7 +566,7 @@ int main(int argc, char** argv) {
     }
 
     // copy to ringbuffer
-    if ((science_mode >> 1) == 0) {
+    if ((science_mode & 1) == 0) {
       // stokes I
       // packets contains:
       // timeseries of I
