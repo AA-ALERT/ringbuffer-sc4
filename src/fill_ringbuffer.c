@@ -584,6 +584,7 @@ int main(int argc, char** argv) {
       // matrix [time][4 channels c0 .. c3][the 4 components IQUV]
       // 
       // TODO: what should be the ring buffer format?
+      LOG("IQUV not implemented yet.\n")
       exit(EXIT_FAILURE);
     }
 
