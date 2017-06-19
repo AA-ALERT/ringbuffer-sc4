@@ -29,6 +29,8 @@
 #define PAYLOADSIZE_STOKESIQUV 8000      // Size of the record = packet - header in bytes
 #define PAYLOADSIZE_MAX        8000      // Maximum of payload size of I, IQUV
 
+#define TIMEUNIT 781250           // Conversion factor of timestamp from seconds to (1.28 us) packets
+
 #define MMSG_VLEN  256            // Batch message into single syscal using recvmmsg()
 
 /* We currently use
@@ -80,7 +82,7 @@ typedef struct {
  * Print commandline optinos
  */
 void printOptions() {
-  printf("usage: fill_ringbuffer -h <header file> -k <hexadecimal key> -c <science case> -s <starttime seconds after 1970> -d <duration (s)> -p <port> -l <logfile>\n");
+  printf("usage: fill_ringbuffer -h <header file> -k <hexadecimal key> -c <science case> -s <starttime packets after 1970> -d <duration (s)> -p <port> -l <logfile>\n");
   printf("e.g. fill_ringbuffer -h \"header1.txt\" -k 10 -s 11565158400000 -d 3600 -p 4000 -l log.txt\n");
   return;
 }
@@ -88,7 +90,7 @@ void printOptions() {
 /**
  * Parse commandline
  */
-void parseOptions(int argc, char*argv[], char **header, char **key, int *science_case, int *science_mode, int *starttime, int *duration, int *port, int *padded_size, char **logfile) {
+void parseOptions(int argc, char*argv[], char **header, char **key, int *science_case, int *science_mode, unsigned long *starttime, int *duration, int *port, int *padded_size, char **logfile) {
   int c;
 
   int seth=0, setk=0, sets=0, setd=0, setp=0, setb=0, setl=0, setc=0, setm=0;
@@ -109,7 +111,7 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
       // -s starttime (seconds after 1970)
       case('s'):
         // *starttime=atol(optarg);
-        *starttime = atoi(optarg);
+        *starttime = atol(optarg);
         sets=1; 
         break;
 
@@ -311,8 +313,8 @@ int main(int argc, char** argv) {
   int science_mode;        // 0: I+TAB, 1: IQUV+TAB, 2: I+IAB, 3: IQUV+IAB
   float missing_pct;       // Number of packets missed in percentage of expected number
   int missing;             // Number of packets missed
-  int starttime;           // Starttime
-  int endtime;             // Endtime
+  unsigned long starttime;           // Starttime
+  unsigned long endtime;             // Endtime
   int padded_size;
 
   // local vars
@@ -348,12 +350,12 @@ int main(int argc, char** argv) {
   }
 
   // calculate run length
-  endtime = starttime + duration;
+  endtime = starttime + duration * TIMEUNIT;
   LOG("fill ringbuffer version: " VERSION "\n");
   LOG("Science case = %i\n", science_case);
   LOG("Science mode = %i [ %s ]\n", science_mode, science_modes[science_mode]);
-  LOG("Starttime = %i\n", starttime);
-  LOG("Endtime = %i\n", endtime);
+  LOG("Starttime = %lu\n", starttime);
+  LOG("Endtime = %lu\n", endtime);
   LOG("Duration = %i\n", duration);
 
   unsigned char expected_marker_byte = 0;
