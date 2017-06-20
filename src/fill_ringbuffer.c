@@ -320,6 +320,7 @@ int main(int argc, char** argv) {
   char *header;
   char *key;
   char *logfile;
+  int pt,pc,ps;
   const char mode = 'w';
 
   packet_t packet_buffer[MMSG_VLEN];   // Buffer for batch requesting packets via recvmmsg
@@ -591,7 +592,7 @@ int main(int argc, char** argv) {
       for (pt=0; pt<500; pt++) { // 500 times
         for (pc=0; pc<3; pc++) { // 1536 channels
           for(ps=0; ps<3; ps++) { // I Q U V
-            buf[((packet->tab_index * 25000 + packet->sequence_number * 500 + pt) * 4 + ps) * 1536 + curr_channel + 0] = record[((pt * 4) + pc) * 4 + ps];
+            buf[((packet->tab_index * 25000 + packet->sequence_number * 500 + pt) * 4 + ps) * 1536 + curr_channel + 0] = packet->record[((pt * 4) + pc) * 4 + ps];
           }
         }
       }
