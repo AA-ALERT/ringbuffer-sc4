@@ -35,6 +35,25 @@ clean:
 src/send: src/send.c
 	gcc -o src/send src/send.c
 
+fill: src/send
+	# delete old ringbuffer
+	-$(BIN_DIR)/dada_db -d
+
+	# start a new ringbuffer on key 'dada' with NTABS x NCHANNELS x 25000 bytes = 460800000
+	$(BIN_DIR)/dada_db -p -k dada -n 8 -b 462422016
+
+	# no scrubber
+
+	# start spewing packages
+	taskset 1 src/send &
+
+	# test the fill_ringbuffer program
+	taskset 2 bin/fill_ringbuffer -k dada -h test/header -c 4 -m 0 -s 20 -d 20 -p 7469 -b 25088 -l test/log
+
+	# clean up
+	-$(BIN_DIR)/dada_db -d
+	-killall -u `whoami` src/send
+
 test: src/send
 	# delete old ringbuffer
 	-$(BIN_DIR)/dada_db -d
