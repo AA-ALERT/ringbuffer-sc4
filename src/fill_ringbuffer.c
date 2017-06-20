@@ -576,7 +576,7 @@ int main(int argc, char** argv) {
     if ((science_mode >> 1) == 0) {
       // stokes I
       // packets contains:
-      // timeseries of I
+      // [time=6250]
       //
       // ring buffer contains matrix:
       // [tab][channel][time]
@@ -586,8 +586,14 @@ int main(int argc, char** argv) {
     } else {
       // stokes IQUV
       // packets contains:
-      // matrix [time][4 channels c0 .. c3][the 4 components IQUV]
+      // [time=500][channel=4][Stokes IQUV=4]
+      // NOTE: actual channel is obtained by adding the channel index offset from the packet header
       //
+      // filterbank layout is:
+      // [time][polarization][frequency channel]
+      //
+      // ringbuffer:
+      // [tab=12][time=25000][polarization]
       // TODO: what should be the ring buffer format?
       exit(EXIT_FAILURE);
     }
