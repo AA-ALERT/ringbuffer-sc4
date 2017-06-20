@@ -82,7 +82,7 @@ typedef struct {
  * Print commandline optinos
  */
 void printOptions() {
-  printf("usage: fill_ringbuffer -h <header file> -k <hexadecimal key> -c <science case> -s <starttime packets after 1970> -d <duration (s)> -p <port> -l <logfile>\n");
+  printf("usage: fill_ringbuffer -h <header file> -k <hexadecimal key> -c <science case> -s <start packet number> -d <duration (s)> -p <port> -l <logfile>\n");
   printf("e.g. fill_ringbuffer -h \"header1.txt\" -k 10 -s 11565158400000 -d 3600 -p 4000 -l log.txt\n");
   return;
 }
@@ -90,7 +90,7 @@ void printOptions() {
 /**
  * Parse commandline
  */
-void parseOptions(int argc, char*argv[], char **header, char **key, int *science_case, int *science_mode, unsigned long *starttime, int *duration, int *port, int *padded_size, char **logfile) {
+void parseOptions(int argc, char*argv[], char **header, char **key, int *science_case, int *science_mode, unsigned long *startpacket, int *duration, int *port, int *padded_size, char **logfile) {
   int c;
 
   int seth=0, setk=0, sets=0, setd=0, setp=0, setb=0, setl=0, setc=0, setm=0;
@@ -108,10 +108,9 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
         setk=1;
         break;
 
-      // -s starttime (seconds after 1970)
+      // -s start packet number
       case('s'):
-        // *starttime=atol(optarg);
-        *starttime = atol(optarg);
+        *startpacket = atol(optarg);
         sets=1; 
         break;
 
@@ -313,8 +312,8 @@ int main(int argc, char** argv) {
   int science_mode;        // 0: I+TAB, 1: IQUV+TAB, 2: I+IAB, 3: IQUV+IAB
   float missing_pct;       // Number of packets missed in percentage of expected number
   int missing;             // Number of packets missed
-  unsigned long starttime;           // Starttime
-  unsigned long endtime;             // Endtime
+  unsigned long startpacket;           // Packet number to start (in units of TIMEUNIT since unix epoch)
+  unsigned long endpacket;             // Packet number to stop (excluded) (in units of TIMEUNIT since unix epoch)
   int padded_size;
 
   // local vars
@@ -331,12 +330,12 @@ int main(int argc, char** argv) {
   packet_t *packet;                 // Pointer to current packet
   unsigned char cb_index = 255;     // Current compound beam index (fixed per run)
   unsigned short curr_channel;      // Current channel index
-  unsigned long curr_time;          // Current timestamp
+  unsigned long curr_packet = 0;    // Current packet number (is number of packets after unix epoch)
   unsigned long sequence_time;      // Timestamp for current sequnce
   unsigned long packets_in_buffer;  // number of records processed per time segment
 
   // parse commandline
-  parseOptions(argc, argv, &header, &key, &science_case, &science_mode, &starttime, &duration, &port, &padded_size, &logfile);
+  parseOptions(argc, argv, &header, &key, &science_case, &science_mode, &startpacket, &duration, &port, &padded_size, &logfile);
 
   // set up logging
   if (logfile) {
@@ -350,13 +349,15 @@ int main(int argc, char** argv) {
   }
 
   // calculate run length
-  endtime = starttime + duration * TIMEUNIT;
+  endpacket = startpacket + duration * TIMEUNIT;
   LOG("fill ringbuffer version: " VERSION "\n");
   LOG("Science case = %i\n", science_case);
   LOG("Science mode = %i [ %s ]\n", science_mode, science_modes[science_mode]);
-  LOG("Starttime = %lu\n", starttime);
-  LOG("Endtime = %lu\n", endtime);
-  LOG("Duration = %i\n", duration);
+  LOG("Start time (unix time) = %lu\n", startpacket / TIMEUNIT);
+  LOG("End time (unix time) = %lu\n", endpacket / TIMEUNIT);
+  LOG("Duration (s) = %i\n", duration);
+  LOG("Start packet = %lu\n", startpacket);
+  LOG("End packet = %lu\n", endpacket);
 
   unsigned char expected_marker_byte = 0;
   unsigned char complete_sequence = 255;
@@ -450,15 +451,15 @@ int main(int argc, char** argv) {
   //  get a new buffer
   buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
   packets_in_buffer = 0;
-  sequence_time = curr_time;
+  sequence_time = curr_packet;
 
   // ============================================================
-  // idle till starttime, but keep track of which bands there are
+  // idle till start time, but keep track of which bands there are
   // ============================================================
  
-  curr_time = 0;
+  curr_packet = 0;
   packet_idx = MMSG_VLEN - 1;
-  while (curr_time < starttime) {
+  while (curr_packet < startpacket) {
     // go to next packet in the packet buffer
     packet_idx++;
 
@@ -478,7 +479,7 @@ int main(int argc, char** argv) {
     cb_index = packet->cb_index;
 
     // keep track of timestamps
-    curr_time = bswap_64(packet->timestamp);
+    curr_packet = bswap_64(packet->timestamp);
   }
 
   // process the first (already-read) package by moving the packet_idx one back
@@ -488,10 +489,10 @@ int main(int argc, char** argv) {
   LOG("STARTING WITH CB_INDEX=%i\n", cb_index);
 
   // ============================================================
-  // run till endtime
+  // run till end time
   // ============================================================
  
-  while (curr_time < endtime) {
+  while (curr_packet < endpacket) {
     // go to next packet in the packet buffer
     packet_idx++;
 
@@ -545,8 +546,8 @@ int main(int argc, char** argv) {
     }
 
     // check timestamps
-    curr_time = bswap_64(packet->timestamp);
-    if (curr_time != sequence_time) {
+    curr_packet = bswap_64(packet->timestamp);
+    if (curr_packet != sequence_time) {
       // start of a new time segment:
       //  - mark the ringbuffer as filled
       if (ipcbuf_mark_filled ((ipcbuf_t *)hdu->data_block, NTABS * NCHANNELS * padded_size) < 0) {
@@ -560,11 +561,11 @@ int main(int argc, char** argv) {
       // - print diagnostics
       missing = complete_sequence * NTABS * NCHANNELS - packets_in_buffer;
       missing_pct = (100.0 * missing) / (1.0 * complete_sequence * NTABS * NCHANNELS);
-      LOG("Compound beam %4i: time %li, missing: %6.3f%% (%i)\n", cb_index, curr_time, missing_pct, missing);
+      LOG("Compound beam %4i: time %li, missing: %6.3f%% (%i)\n", cb_index, curr_packet, missing_pct, missing);
 
       //  - reset the packets counter and sequence time
       packets_in_buffer = 0;
-      sequence_time = curr_time;
+      sequence_time = curr_packet;
     }
 
     // copy to ringbuffer
