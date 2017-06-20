@@ -581,12 +581,20 @@ int main(int argc, char** argv) {
         packet->record, expected_payload);
     } else {
       // stokes IQUV
-      // packets contains:
-      // matrix [time][4 channels c0 .. c3][the 4 components IQUV]
+      // packets contains matrix:
+      // [time=500][4 channels c0 .. c3][the 4 components IQUV]
       // 
-      // TODO: what should be the ring buffer format?
-      LOG("IQUV not implemented yet.\n")
-      exit(EXIT_FAILURE);
+      // ring buffer contains matrix:
+      // [tab=12][time=25000][the 4 components IQUV][1536 channels]
+      //
+      // TODO: see if we can get UDP packets containing consecutive data?
+      for (pt=0; pt<500; pt++) { // 500 times
+        for (pc=0; pc<3; pc++) { // 1536 channels
+          for(ps=0; ps<3; ps++) { // I Q U V
+            buf[((packet->tab_index * 25000 + packet->sequence_number * 500 + pt) * 4 + ps) * 1536 + curr_channel + 0] = record[((pt * 4) + pc) * 4 + ps];
+          }
+        }
+      }
     }
 
     // book keeping
