@@ -320,7 +320,7 @@ int main(int argc, char** argv) {
   char *header;
   char *key;
   char *logfile;
-  int pt,pc,ps;
+  int pt;
   const char mode = 'w';
 
   packet_t packet_buffer[MMSG_VLEN];   // Buffer for batch requesting packets via recvmmsg
@@ -361,31 +361,31 @@ int main(int argc, char** argv) {
   LOG("End packet = %lu\n", endpacket);
 
   unsigned char expected_marker_byte = 0;
-  unsigned char complete_sequence = 255;
+  int packets_per_sample = 0;
   unsigned short expected_payload = 0;
   if (science_case == 3) {
     switch (science_mode) {
       case 0:
         expected_marker_byte = 0xD0; // I with TAB
-        complete_sequence = 2;
+        packets_per_sample = NTABS * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         break;
 
       case 1:
         expected_marker_byte = 0xD1; // IQUV with TAB
-        complete_sequence = 25;
+        packets_per_sample = NTABS * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         break;
 
       case 2:
         expected_marker_byte = 0xD2; // I with IAB
-        complete_sequence = 2;
+        packets_per_sample = NTABS * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         break;
 
       case 3:
         expected_marker_byte = 0xD3; // IQUV with IAB
-        complete_sequence = 25;
+        packets_per_sample = NTABS * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         break;
     }
@@ -393,25 +393,25 @@ int main(int argc, char** argv) {
     switch (science_mode) {
       case 0:
         expected_marker_byte = 0xE0; // I with TAB
-        complete_sequence = 4;
+        packets_per_sample = NTABS * NCHANNELS * 25000 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         break;
 
       case 1:
         expected_marker_byte = 0xE1; // IQUV with TAB
-        complete_sequence = 50;
+        packets_per_sample = NTABS * NCHANNELS * 25000 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         break;
 
       case 2:
         expected_marker_byte = 0xE2; // I with IAB
-        complete_sequence = 4;
+        packets_per_sample = NTABS * NCHANNELS * 25000 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         break;
 
       case 3:
         expected_marker_byte = 0xE3; // IQUV with IAB
-        complete_sequence = 50;
+        packets_per_sample = NTABS * NCHANNELS * 25000 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         break;
     }
@@ -419,6 +419,10 @@ int main(int argc, char** argv) {
     LOG("Science case not supported");
     goto exit;
   }
+
+  LOG("Expected marker byte= 0x%X\n", expected_marker_byte);
+  LOG("Expected payload = %i B\n", expected_payload);
+  LOG("Packets per sample = %i\n", packets_per_sample);
 
   // sockets
   LOG("Opening network port %i\n", port);
@@ -481,6 +485,11 @@ int main(int argc, char** argv) {
 
     // keep track of timestamps
     curr_packet = bswap_64(packet->timestamp);
+
+    if (curr_packet != sequence_time) {
+      printf( "Current packet is %li\n", curr_packet);
+      sequence_time = curr_packet;
+    }
   }
 
   // process the first (already-read) package by moving the packet_idx one back
@@ -560,8 +569,8 @@ int main(int argc, char** argv) {
       buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
 
       // - print diagnostics
-      missing = complete_sequence * NTABS * NCHANNELS - packets_in_buffer;
-      missing_pct = (100.0 * missing) / (1.0 * complete_sequence * NTABS * NCHANNELS);
+      missing = packets_per_sample - packets_in_buffer;
+      missing_pct = (100.0 * missing) / (1.0 * packets_per_sample);
       LOG("Compound beam %4i: time %li, missing: %6.3f%% (%i)\n", cb_index, curr_packet, missing_pct, missing);
 
       //  - reset the packets counter and sequence time
@@ -589,12 +598,43 @@ int main(int argc, char** argv) {
       // [tab=12][time=25000][the 4 components IQUV][1536 channels]
       //
       // TODO: see if we can get UDP packets containing consecutive data?
-      for (pt=0; pt<500; pt++) { // 500 times
-        for (pc=0; pc<3; pc++) { // 1536 channels
-          for(ps=0; ps<3; ps++) { // I Q U V
-            buf[((packet->tab_index * 25000 + packet->sequence_number * 500 + pt) * 4 + ps) * 1536 + curr_channel + 0] = packet->record[((pt * 4) + pc) * 4 + ps];
-          }
-        }
+      //
+      // buf[((packet->tab_index * 25000 + packet->sequence_number * 500 + pt) * 4 + ps) * 1536 + curr_channel + pc]
+      //    = packet->record[((pt * 4) + pc) * 4 + ps];
+
+      char *bufI = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 0) * 1536 + curr_channel];
+      char *bufQ = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 1) * 1536 + curr_channel];
+      char *bufU = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 2) * 1536 + curr_channel];
+      char *bufV = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 3) * 1536 + curr_channel];
+      char *r = packet->record;
+      for (pt=0; pt<500; pt++) {
+        // unrolled loop over I Q U V
+        // unrolled loop over channel
+        *bufI++ = *r++;
+        *bufQ++ = *r++;
+        *bufU++ = *r++;
+        *bufV++ = *r++;
+
+        *bufI++ = *r++;
+        *bufQ++ = *r++;
+        *bufU++ = *r++;
+        *bufV++ = *r++;
+
+        *bufI++ = *r++;
+        *bufQ++ = *r++;
+        *bufU++ = *r++;
+        *bufV++ = *r++;
+
+        *bufI   = *r++;
+        *bufQ   = *r++;
+        *bufU   = *r++;
+        *bufV   = *r++;
+
+        // advance one time unit, but compensate for the 3 increases above
+        bufI += 4 * 1536 - 3;
+        bufQ += 4 * 1536 - 3;
+        bufU += 4 * 1536 - 3;
+        bufV += 4 * 1536 - 3;
       }
     }
 

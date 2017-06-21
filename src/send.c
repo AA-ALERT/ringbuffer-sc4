@@ -21,12 +21,13 @@
 
 #define PACKETSIZE_STOKESIQUV  8114      // Size of the packet, including the header in bytes
 #define PAYLOADSIZE_STOKESIQUV 8000      // Size of the record = packet - header in bytes
+
 #define PAYLOADSIZE_MAX        8000      // Maximum of payload size of I, IQUV
 
 #define MMSG_VLEN  256            // Batch message into single syscal using recvmmsg()
 
 #define TIMEUNIT 781250           // Conversion factor of timestamp from seconds to (1.28 us) packets
-#define UMSPPACKET (1.0)          // sleep time in microseconds between sending two packets
+#define UMSPPACKET (1000.0)       // sleep time in microseconds between sending two packets
 
 /*
  * Header description based on:
@@ -49,16 +50,178 @@ typedef struct {
   unsigned char record[PAYLOADSIZE_MAX];
 } packet_t;
 
+
+/**
+ * Print commandline optinos
+ */
+void printOptions() {
+  printf("usage: send -c <science case> -m <science mode> -s <start packet number> -p <port>\n");
+  return;
+}
+
+/**
+ * Parse commandline
+ */
+void parseOptions(int argc, char*argv[], int *science_case, int *science_mode, unsigned long *startpacket, int *port) {
+  int sets=0, setp=0, setc=0, setm=0;
+
+  // TODO
+  *startpacket = 0;
+  sets = 1;
+
+  int c;
+  while((c=getopt(argc,argv,"s:p:c:m:"))!=-1) {
+    switch(c) {
+      // -s start packet number
+      case('s'):
+        *startpacket = atol(optarg);
+        sets=1;
+        break;
+
+      // -p port number
+      case('p'):
+        *port=atoi(optarg);
+        setp=1;
+        break;
+
+      // -c case
+      case('c'):
+        *science_case = atoi(optarg);
+        setc=1;
+        if (*science_case < 3 || *science_case > 4) {
+          printOptions();
+          exit(0);
+        }
+        break;
+
+      // -m mode
+      case('m'):
+        *science_mode = atoi(optarg);
+        setm=1;
+        if (*science_mode < 0 || *science_mode > 4) {
+          printOptions();
+          exit(0);
+        }
+        break;
+
+      default:
+        fprintf(stderr, "Illegal option '%c'\n",  c);
+        printOptions();
+        exit(0);
+    }
+  }
+
+  // All arguments are required
+  if (!sets || !setp || !setc || !setm) {
+    printf( "sets %i setp %i setc %i setm %i\n", sets, setp, setc, setm);
+    printOptions();
+    exit(EXIT_FAILURE);
+  }
+}
+
 int main(int argc , char *argv[]) {
+  // commandline args
+  int port;
+  int science_mode;        // 0: I+TAB, 1: IQUV+TAB, 2: I+IAB, 3: IQUV+IAB
+  int science_case;        // 3 or 4
+  unsigned long startpacket;
+  parseOptions(argc, argv, &science_case, &science_mode, &startpacket, &port);
+
+  // local variables
   int sockfd;
   struct addrinfo hints, *servinfo, *p;
+  int payload_size;
+  int packet_size;
+  int sequence_length = 1;
+  int ntabs = 12;
+  int channel_delta = 1;
+  unsigned char marker_field = 0;
 
+  switch (science_case) {
+    case 3:
+      switch (science_mode) {
+        case 0:
+          // Science case 3, Stokes I + TAB
+          payload_size = PAYLOADSIZE_STOKESI;
+          packet_size = PACKETSIZE_STOKESI;
+          sequence_length = 2;
+          marker_field = 0xD0;
+          channel_delta = 1;
+          break;
+        case 1:
+          // Science case 3, Stokes IQUV + TAB
+          payload_size = PAYLOADSIZE_STOKESIQUV;
+          packet_size = PACKETSIZE_STOKESIQUV;
+          sequence_length = 25;
+          marker_field = 0xD1;
+          channel_delta = 4;
+          break;
+        case 2:
+          // Science case 3, Stokes I + IAB
+          payload_size = PAYLOADSIZE_STOKESI;
+          packet_size = PACKETSIZE_STOKESI;
+          sequence_length = 2;
+          marker_field = 0xD2;
+          channel_delta = 1;
+          break;
+        case 3:
+          // Science case 3, Stokes IQUV + IAB
+          payload_size = PAYLOADSIZE_STOKESIQUV;
+          packet_size = PACKETSIZE_STOKESIQUV;
+          sequence_length = 25;
+          marker_field = 0xD3;
+          channel_delta = 4;
+          break;
+      }
+      break;
+
+    case 4:
+      switch (science_mode) {
+        case 0:
+          // Science case 4, Stokes I + TAB
+          payload_size = PAYLOADSIZE_STOKESI;
+          packet_size = PACKETSIZE_STOKESI;
+          sequence_length = 4;
+          marker_field = 0xE0;
+          channel_delta = 1;
+          break;
+        case 1:
+          // Science case 4, Stokes IQUV + TAB
+          payload_size = PAYLOADSIZE_STOKESIQUV;
+          packet_size = PACKETSIZE_STOKESIQUV;
+          sequence_length = 50;
+          marker_field = 0xE1;
+          channel_delta = 4;
+          break;
+        case 2:
+          // Science case 4, Stokes I + IAB
+          payload_size = PAYLOADSIZE_STOKESI;
+          packet_size = PACKETSIZE_STOKESI;
+          sequence_length = 4;
+          marker_field = 0xE2;
+          channel_delta = 1;
+          break;
+        case 3:
+          // Science case 4, Stokes IQUV + IAB
+          payload_size = PAYLOADSIZE_STOKESIQUV;
+          packet_size = PACKETSIZE_STOKESIQUV;
+          sequence_length = 50;
+          marker_field = 0xE3;
+          channel_delta = 4;
+          break;
+      }
+      break;
+  }
+  printf("Sending sequence_length=%i packet_size=%i payload_size=%i marker_field=%i channel_delta=%i ntabs=%i\n",
+      sequence_length, packet_size, payload_size, marker_field, channel_delta, ntabs);
+
+  // connect to port
   memset(&hints, 0, sizeof hints);
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_DGRAM;
 
   char service[256];
-  snprintf(service, 255, "%i", 7469);
+  snprintf(service, 255, "%i", port);
 
   // find possible connections
   if(getaddrinfo("127.0.0.1", service, &hints, &servinfo) != 0) {
@@ -87,17 +250,16 @@ int main(int argc , char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  // keep sending packets till user hits C-c
+  // multi message setup
   packet_t packet_buffer[MMSG_VLEN];   // Buffer for batch requesting packets via recvmmsg
   unsigned int packet_idx;             // Current packet index in MMSG buffer
   struct iovec iov[MMSG_VLEN];         // IO vec structure for recvmmsg
   struct mmsghdr msgs[MMSG_VLEN];      // multimessage hearders for recvmmsg
 
-  // multi message setup
   memset(msgs, 0, sizeof(msgs));
   for(packet_idx=0; packet_idx < MMSG_VLEN; packet_idx++) {
     iov[packet_idx].iov_base = (char *) &packet_buffer[packet_idx];
-    iov[packet_idx].iov_len = PACKETSIZE_STOKESI;
+    iov[packet_idx].iov_len = packet_size;
 
     msgs[packet_idx].msg_hdr.msg_name    = NULL; // we don't need to know who sent the data
     msgs[packet_idx].msg_hdr.msg_iov     = &iov[packet_idx];
@@ -105,48 +267,63 @@ int main(int argc , char *argv[]) {
     msgs[packet_idx].msg_hdr.msg_control = NULL; // we're not interested in OoB data
   }
 
+  // local counters
+  unsigned short curr_channel = 0;
+  unsigned char curr_sequence = 0;
+  unsigned char curr_tab = 0;
+  unsigned long curr_time = startpacket;
+
   packet_t *packet;                // Pointer to current packet
-  int counter = 0;
-  unsigned long curr_packet;       // Current timestamp
-  unsigned long dropped = 0;       // deliberately dropped packets
   while(1) {
+
+    // Create the next MMSB_VLEN packets
+    //
+    // Loop over:
+    //  * tab           [0 .. 12]
+    //  * sequence      [0 .. sequence_length]
+    //  * channel       [0 .. 1536], in steps of channel_delta
     for(packet_idx=0; packet_idx < MMSG_VLEN; packet_idx++) {
       packet = &packet_buffer[packet_idx];
 
-      packet->marker_byte = 0xE0; // case 4 mode 0
+      // set constant values
+      packet->marker_byte = marker_field;
       packet->format_version = 1;
       packet->cb_index = 1;
-      packet->payload_size = bswap_16(PAYLOADSIZE_STOKESI);
+      packet->payload_size = bswap_16(payload_size);
 
-      packet->sequence_number = counter % 4;
-      packet->tab_index = (counter / 4) % 12;
-      packet->channel_index = bswap_16((counter / (4 * 12)) % 1536);
+      // update non-constant values
+      packet->sequence_number = curr_sequence;
+      packet->tab_index = curr_tab;
+      packet->channel_index = bswap_16(curr_channel);
+      packet->timestamp = bswap_64(curr_time);
 
-      curr_packet = TIMEUNIT * (counter / (4 * 12 * 1536));
-      packet->timestamp = bswap_64(curr_packet);
-
-      //if (counter % 12345 == 0) {
-      //  // deliberately drop some packets
-      //  counter += 1;
-      //  dropped++;
-      //}
-
-      counter += 1;
+      // go to next packet
+      curr_channel += channel_delta;
+      if (curr_channel >= 1536) {
+        curr_channel = 0;
+        curr_sequence++;
+      }
+      if (curr_sequence >= sequence_length) {
+        curr_sequence = 0;
+        curr_tab++;
+      }
+      if (curr_tab >= ntabs) {
+        curr_tab = 0;
+        curr_time += 800000; // 1.024 seconds per frame, in units of 1.28 microseconds
+      }
     }
 
-    // Send some data
-    // res = sendto(sockfd, &packet, PACKETSIZE, 0, p->ai_addr, p->ai_addrlen);
+    // Send next batch of packets
     if (sendmmsg(sockfd, msgs, MMSG_VLEN, 0) == -1) {
       perror("ERROR Could not send packets");
       goto exit;
     }
 
     // slow down sending a bit
-    usleep(UMSPPACKET  * 0.5);
+    usleep(UMSPPACKET);
   }
 
 exit:
-  fprintf(stderr, "Deliberately unsent packets:    %li\n", dropped);
   // done, clean up
   free(servinfo); 
   close(sockfd);
