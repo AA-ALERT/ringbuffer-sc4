@@ -227,13 +227,15 @@ int init_network(int port) {
 /**
  * Open a connection to the ringbuffer
  * The metadata (header block) is read from file
+ * The required_size field is updated with the actual buffer size
+ *
  * @param {dada_hdu_t **} hdu pointer to a pointer of HDU
  * @param {char *} header String containing the header file names to read
  * @param {char *} key String containing the shared memeory keys as hexadecimal numbers
- * @param {int} padded_size Stride of data array, needed to check buffer size
+ * @param {size_t *} required_size Minimum required ring buffer page size
  * @returns {hdu *} A connected HDU
  */
-dada_hdu_t *init_ringbuffer(char *header, char *key, int padded_size) {
+dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *required_size) {
   char *buf;
   uint64_t bufsz;
   uint64_t nbufs;
@@ -289,10 +291,15 @@ dada_hdu_t *init_ringbuffer(char *header, char *key, int padded_size) {
 
   dada_hdu_db_addresses(hdu, &nbufs, &bufsz);
 
-  if (bufsz < NTABS * NCHANNELS * padded_size) {
-    LOG("ERROR. ring buffer data block too small, should be at least %i\n", NTABS * NCHANNELS * padded_size);
+  if (bufsz < *required_size) {
+    LOG("ERROR. ring buffer data block too small, should be at least %li\n", required_size);
     exit(EXIT_FAILURE);
   }
+
+  // set the required size to the actual size
+  // this is needed when marking a page full.
+  // If we need to use the actual buffer size to prevent the stream from closing (too small) or reading outside of the array bounds (too big)
+  *required_size = bufsz;
 
   return hdu;
 }
@@ -322,6 +329,7 @@ int main(int argc, char** argv) {
   char *logfile;
   int pt;
   const char mode = 'w';
+  size_t required_size = 0;
 
   packet_t packet_buffer[MMSG_VLEN];   // Buffer for batch requesting packets via recvmmsg
   unsigned int packet_idx;             // Current packet index in MMSG buffer
@@ -369,24 +377,28 @@ int main(int argc, char** argv) {
         expected_marker_byte = 0xD0; // I with TAB
         packets_per_sample = NTABS * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
+        required_size = NTABS * NCHANNELS * padded_size;
         break;
 
       case 1:
         expected_marker_byte = 0xD1; // IQUV with TAB
         packets_per_sample = NTABS * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
+        required_size = NTABS * NCHANNELS * 12500 * 4;
         break;
 
       case 2:
         expected_marker_byte = 0xD2; // I with IAB
         packets_per_sample = NTABS * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
+        required_size = NTABS * NCHANNELS * padded_size;
         break;
 
       case 3:
         expected_marker_byte = 0xD3; // IQUV with IAB
         packets_per_sample = NTABS * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
+        required_size = NTABS * NCHANNELS * 12500 * 4;
         break;
     }
   } else if (science_case == 4) {
@@ -395,24 +407,28 @@ int main(int argc, char** argv) {
         expected_marker_byte = 0xE0; // I with TAB
         packets_per_sample = NTABS * NCHANNELS * 25000 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
+        required_size = NTABS * NCHANNELS * padded_size;
         break;
 
       case 1:
         expected_marker_byte = 0xE1; // IQUV with TAB
         packets_per_sample = NTABS * NCHANNELS * 25000 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
+        required_size = NTABS * NCHANNELS * 25000 * 4;
         break;
 
       case 2:
         expected_marker_byte = 0xE2; // I with IAB
         packets_per_sample = NTABS * NCHANNELS * 25000 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
+        required_size = NTABS * NCHANNELS * padded_size;
         break;
 
       case 3:
         expected_marker_byte = 0xE3; // IQUV with IAB
         packets_per_sample = NTABS * NCHANNELS * 25000 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
+        required_size = NTABS * NCHANNELS * 25000 * 4;
         break;
     }
   } else {
@@ -442,7 +458,7 @@ int main(int argc, char** argv) {
 
   // ring buffer
   LOG("Connecting to ringbuffer\n");
-  hdu = init_ringbuffer(header, key, padded_size);
+  hdu = init_ringbuffer(header, key, &required_size);
   free(header);
   free(key);
 
@@ -560,7 +576,7 @@ int main(int argc, char** argv) {
     if (curr_packet != sequence_time) {
       // start of a new time segment:
       //  - mark the ringbuffer as filled
-      if (ipcbuf_mark_filled ((ipcbuf_t *)hdu->data_block, NTABS * NCHANNELS * padded_size) < 0) {
+      if (ipcbuf_mark_filled ((ipcbuf_t *)hdu->data_block, required_size) < 0) {
         LOG("ERROR: cannot mark buffer as filled\n");
         goto exit;
       }
@@ -602,11 +618,11 @@ int main(int argc, char** argv) {
       // buf[((packet->tab_index * 25000 + packet->sequence_number * 500 + pt) * 4 + ps) * 1536 + curr_channel + pc]
       //    = packet->record[((pt * 4) + pc) * 4 + ps];
 
-      char *bufI = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 0) * 1536 + curr_channel];
-      char *bufQ = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 1) * 1536 + curr_channel];
-      char *bufU = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 2) * 1536 + curr_channel];
-      char *bufV = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 3) * 1536 + curr_channel];
-      char *r = packet->record;
+      unsigned char *bufI = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 0) * 1536 + curr_channel];
+      unsigned char *bufQ = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 1) * 1536 + curr_channel];
+      unsigned char *bufU = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 2) * 1536 + curr_channel];
+      unsigned char *bufV = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 3) * 1536 + curr_channel];
+      unsigned char *r = packet->record;
       for (pt=0; pt<500; pt++) {
         // unrolled loop over I Q U V
         // unrolled loop over channel

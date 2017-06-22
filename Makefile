@@ -41,8 +41,8 @@ fill_41: src/send
 	# delete old ringbuffer
 	-$(BIN_DIR)/dada_db -d -k $(TESTKEY)
 
-	# start a new ringbuffer with NTABS x NCHANNELS x 25000 bytes = 460800000
-	$(BIN_DIR)/dada_db -p -k $(TESTKEY) -n 8 -b 460800000
+	# start a new ringbuffer with NTABS x NCHANNELS x IQUV x 25000 bytes
+	$(BIN_DIR)/dada_db -p -k $(TESTKEY) -n 8 -b 1843200000
 
 	# no scrubber
 
@@ -50,7 +50,7 @@ fill_41: src/send
 	taskset 1 src/send -c 4 -m 1 -s 0 -p 7469 &
 
 	# test the fill_ringbuffer program
-	taskset 2 bin/fill_ringbuffer -k $(TESTKEY) -h test/header -c 4 -m 1 -s 20 -d 20 -p 7469 -b 25088 -l test/log
+	taskset 2 bin/fill_ringbuffer -k $(TESTKEY) -h test/header -c 4 -m 1 -s 20 -d 10000 -p 7469 -b 25088 -l test/log
 
 	# clean up
 	-$(BIN_DIR)/dada_db -d -k $(TESTKEY)
