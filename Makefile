@@ -1,5 +1,5 @@
 SOURCE_ROOT ?= $(HOME)
-BIN_DIR := $(SOURCE_ROOT)/install/bin
+BIN_DIR ?= $(SOURCE_ROOT)/install/bin
 
 VERSION := $(shell git rev-parse HEAD )
 
