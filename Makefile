@@ -56,10 +56,10 @@ fill_41: src/send
 	-$(BIN_DIR)/dada_db -d -k $(TESTKEY)
 	-killall -u `whoami` src/send
 
-test: test40 test41
+test: test40 test41 test42
 
 test40: src/send
-	# testing science case 4 mode 0 (I)
+	# testing science case 4 mode 0 (I+TAB)
 	# delete old ringbuffer
 	-$(BIN_DIR)/dada_db -d -k $(TESTKEY)
 
@@ -101,3 +101,23 @@ test41: src/send
 	-$(BIN_DIR)/dada_db -d -k $(TESTKEY)
 	-killall -u `whoami` src/send
 
+test42: src/send
+	# testing science case 4 mode 2 (I+IAB)
+	# delete old ringbuffer
+	-$(BIN_DIR)/dada_db -d -k $(TESTKEY)
+
+	# start a new ringbuffer with NTABS x NCHANNELS x 25000 bytes = 3840000
+	$(BIN_DIR)/dada_db -p -k $(TESTKEY) -n 3 -b 38400000
+
+	# start a scrubber to empty the buffer (this fakes the pipeline reading data from the buffer)
+	$(BIN_DIR)/dada_dbscrubber -v -k $(TESTKEY) &
+
+	# start spewing packages
+	taskset 1 src/send -c 4 -m 2 -s 0 -p 7469 &
+
+	# test the fill_ringbuffer program
+	taskset 2 bin/fill_ringbuffer -k $(TESTKEY) -h test/header -c 4 -m 2 -s 8000 -d 65 -p 7469 -b 25000 -l test/log
+
+	# clean up
+	-$(BIN_DIR)/dada_db -d -k $(TESTKEY)
+	-killall -u `whoami` src/send

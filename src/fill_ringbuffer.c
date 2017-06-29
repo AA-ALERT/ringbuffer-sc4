@@ -45,7 +45,6 @@
  * SC4: records per 1.024s 25000
  */
 
-#define NTABS       12
 #define NCHANNELS 1536
 
 #define SOCKBUFSIZE 67108864      // Buffer size of socket
@@ -330,6 +329,7 @@ int main(int argc, char** argv) {
   int pt;
   const char mode = 'w';
   size_t required_size = 0;
+  int ntabs = 0;
 
   packet_t packet_buffer[MMSG_VLEN];   // Buffer for batch requesting packets via recvmmsg
   unsigned int packet_idx;             // Current packet index in MMSG buffer
@@ -375,60 +375,68 @@ int main(int argc, char** argv) {
     switch (science_mode) {
       case 0:
         expected_marker_byte = 0xD0; // I with TAB
-        packets_per_sample = NTABS * NCHANNELS * 12500 * 1 / 6250;
+        ntabs = 12;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
-        required_size = NTABS * NCHANNELS * padded_size;
+        required_size = ntabs * NCHANNELS * padded_size;
         break;
 
       case 1:
         expected_marker_byte = 0xD1; // IQUV with TAB
-        packets_per_sample = NTABS * NCHANNELS * 12500 * 4 / 8000;
+        ntabs = 12;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = NTABS * NCHANNELS * 12500 * 4;
+        required_size = ntabs * NCHANNELS * 12500 * 4;
         break;
 
       case 2:
         expected_marker_byte = 0xD2; // I with IAB
-        packets_per_sample = NTABS * NCHANNELS * 12500 * 1 / 6250;
+        ntabs = 1;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
-        required_size = NTABS * NCHANNELS * padded_size;
+        required_size = ntabs * NCHANNELS * padded_size;
         break;
 
       case 3:
         expected_marker_byte = 0xD3; // IQUV with IAB
-        packets_per_sample = NTABS * NCHANNELS * 12500 * 4 / 8000;
+        ntabs = 1;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = NTABS * NCHANNELS * 12500 * 4;
+        required_size = ntabs * NCHANNELS * 12500 * 4;
         break;
     }
   } else if (science_case == 4) {
     switch (science_mode) {
       case 0:
         expected_marker_byte = 0xE0; // I with TAB
-        packets_per_sample = NTABS * NCHANNELS * 25000 * 1 / 6250;
+        ntabs = 12;
+        packets_per_sample = ntabs * NCHANNELS * 25000 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
-        required_size = NTABS * NCHANNELS * padded_size;
+        required_size = ntabs * NCHANNELS * padded_size;
         break;
 
       case 1:
         expected_marker_byte = 0xE1; // IQUV with TAB
-        packets_per_sample = NTABS * NCHANNELS * 25000 * 4 / 8000;
+        ntabs = 12;
+        packets_per_sample = ntabs * NCHANNELS * 25000 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = NTABS * NCHANNELS * 25000 * 4;
+        required_size = ntabs * NCHANNELS * 25000 * 4;
         break;
 
       case 2:
         expected_marker_byte = 0xE2; // I with IAB
-        packets_per_sample = NTABS * NCHANNELS * 25000 * 1 / 6250;
+        ntabs = 1;
+        packets_per_sample = ntabs * NCHANNELS * 25000 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
-        required_size = NTABS * NCHANNELS * padded_size;
+        required_size = ntabs * NCHANNELS * padded_size;
         break;
 
       case 3:
         expected_marker_byte = 0xE3; // IQUV with IAB
-        packets_per_sample = NTABS * NCHANNELS * 25000 * 4 / 8000;
+        ntabs = 1;
+        packets_per_sample = ntabs * NCHANNELS * 25000 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = NTABS * NCHANNELS * 25000 * 4;
+        required_size = ntabs * NCHANNELS * 25000 * 4;
         break;
     }
   } else {
@@ -553,7 +561,7 @@ int main(int argc, char** argv) {
     }
 
     // check tab index 
-    if (packet->tab_index >= NTABS) {
+    if (packet->tab_index >= ntabs) {
       LOG("ERROR: unexpected tab index %d\n", packet->tab_index);
       goto exit;
     }

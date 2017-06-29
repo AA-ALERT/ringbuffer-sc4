@@ -133,7 +133,7 @@ int main(int argc , char *argv[]) {
   int payload_size;
   int packet_size;
   int sequence_length = 1;
-  int ntabs = 12;
+  int ntabs = 1;
   int channel_delta = 1;
   unsigned char marker_field = 0;
 
@@ -146,6 +146,7 @@ int main(int argc , char *argv[]) {
           packet_size = PACKETSIZE_STOKESI;
           sequence_length = 2;
           marker_field = 0xD0;
+          ntabs = 12;
           channel_delta = 1;
           break;
         case 1:
@@ -154,6 +155,7 @@ int main(int argc , char *argv[]) {
           packet_size = PACKETSIZE_STOKESIQUV;
           sequence_length = 25;
           marker_field = 0xD1;
+          ntabs = 12;
           channel_delta = 4;
           break;
         case 2:
@@ -162,6 +164,7 @@ int main(int argc , char *argv[]) {
           packet_size = PACKETSIZE_STOKESI;
           sequence_length = 2;
           marker_field = 0xD2;
+          ntabs = 1;
           channel_delta = 1;
           break;
         case 3:
@@ -170,6 +173,7 @@ int main(int argc , char *argv[]) {
           packet_size = PACKETSIZE_STOKESIQUV;
           sequence_length = 25;
           marker_field = 0xD3;
+          ntabs = 1;
           channel_delta = 4;
           break;
       }
@@ -183,6 +187,7 @@ int main(int argc , char *argv[]) {
           packet_size = PACKETSIZE_STOKESI;
           sequence_length = 4;
           marker_field = 0xE0;
+          ntabs = 12;
           channel_delta = 1;
           break;
         case 1:
@@ -191,6 +196,7 @@ int main(int argc , char *argv[]) {
           packet_size = PACKETSIZE_STOKESIQUV;
           sequence_length = 50;
           marker_field = 0xE1;
+          ntabs = 12;
           channel_delta = 4;
           break;
         case 2:
@@ -199,6 +205,7 @@ int main(int argc , char *argv[]) {
           packet_size = PACKETSIZE_STOKESI;
           sequence_length = 4;
           marker_field = 0xE2;
+          ntabs = 1;
           channel_delta = 1;
           break;
         case 3:
@@ -207,6 +214,7 @@ int main(int argc , char *argv[]) {
           packet_size = PACKETSIZE_STOKESIQUV;
           sequence_length = 50;
           marker_field = 0xE3;
+          ntabs = 1;
           channel_delta = 4;
           break;
       }
