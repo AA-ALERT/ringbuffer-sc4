@@ -89,7 +89,7 @@ void printOptions() {
 /**
  * Parse commandline
  */
-void parseOptions(int argc, char*argv[], char **header, char **key, int *science_case, int *science_mode, unsigned long *startpacket, int *duration, int *port, int *padded_size, char **logfile) {
+void parseOptions(int argc, char*argv[], char **header, char **key, int *science_case, int *science_mode, unsigned long *startpacket, float *duration, int *port, int *padded_size, char **logfile) {
   int c;
 
   int seth=0, setk=0, sets=0, setd=0, setp=0, setb=0, setl=0, setc=0, setm=0;
@@ -115,7 +115,7 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
 
       // -d duration in seconds
       case('d'):
-        *duration=atoi(optarg);
+        *duration=atof(optarg);
         setd=1;
         break;
 
@@ -313,7 +313,7 @@ int main(int argc, char** argv) {
   char *buf; // pointer to current buffer
 
   // run parameters
-  int duration;            // run time in seconds
+  float duration;          // run time in seconds
   int science_case;        // 3 or 4
   int science_mode;        // 0: I+TAB, 1: IQUV+TAB, 2: I+IAB, 3: IQUV+IAB
   float missing_pct;       // Number of packets missed in percentage of expected number
@@ -330,6 +330,7 @@ int main(int argc, char** argv) {
   const char mode = 'w';
   size_t required_size = 0;
   int ntabs = 0;
+  float done_pct;
 
   packet_t packet_buffer[MMSG_VLEN];   // Buffer for batch requesting packets via recvmmsg
   unsigned int packet_idx;             // Current packet index in MMSG buffer
@@ -358,13 +359,13 @@ int main(int argc, char** argv) {
   }
 
   // calculate run length
-  endpacket = startpacket + duration * TIMEUNIT;
+  endpacket = startpacket + (int) (duration * TIMEUNIT);
   LOG("fill ringbuffer version: " VERSION "\n");
   LOG("Science case = %i\n", science_case);
   LOG("Science mode = %i [ %s ]\n", science_mode, science_modes[science_mode]);
   LOG("Start time (unix time) = %lu\n", startpacket / TIMEUNIT);
   LOG("End time (unix time) = %lu\n", endpacket / TIMEUNIT);
-  LOG("Duration (s) = %i\n", duration);
+  LOG("Duration (s) = %f\n", duration);
   LOG("Start packet = %lu\n", startpacket);
   LOG("End packet = %lu\n", endpacket);
 
@@ -595,7 +596,8 @@ int main(int argc, char** argv) {
       // - print diagnostics
       missing = packets_per_sample - packets_in_buffer;
       missing_pct = (100.0 * missing) / (1.0 * packets_per_sample);
-      LOG("Compound beam %4i: time %li, missing: %6.3f%% (%i)\n", cb_index, curr_packet, missing_pct, missing);
+      done_pct = (curr_packet - startpacket) / (endpacket - startpacket) * 100.0;
+      LOG("Compound beam %4i: time %li (%6.2f%%), missing: %6.3f%% (%i)\n", cb_index, curr_packet, done_pct, missing_pct, missing);
 
       //  - reset the packets counter and sequence time
       packets_in_buffer = 0;
