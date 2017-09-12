@@ -291,7 +291,7 @@ dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *required_size) {
   dada_hdu_db_addresses(hdu, &nbufs, &bufsz);
 
   if (bufsz < *required_size) {
-    LOG("ERROR. ring buffer data block too small, should be at least %li\n", required_size);
+    LOG("ERROR. ring buffer data block too small, should be at least %lui\n", *required_size);
     exit(EXIT_FAILURE);
   }
 
