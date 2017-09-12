@@ -458,7 +458,7 @@ int main(int argc, char** argv) {
 
   // ring buffer
   LOG("Connecting to ringbuffer\n");
-  hdu = init_ringbuffer(header, key, &required_size);
+  hdu = init_ringbuffer(header, key, &required_size); // sets required_size to actual size
   free(header);
   free(key);
 
@@ -609,6 +609,7 @@ int main(int argc, char** argv) {
       // stokes IQUV
       // packets contains matrix:
       // [time=500][4 channels c0 .. c3][the 4 components IQUV]
+      // [time=500][the 4 components IQUV][4 channels c0 .. c3]
       // 
       // ring buffer contains matrix:
       // [tab=12][time=25000][the 4 components IQUV][1536 channels]
