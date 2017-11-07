@@ -596,7 +596,7 @@ int main(int argc, char** argv) {
       // - print diagnostics
       missing = packets_per_sample - packets_in_buffer;
       missing_pct = (100.0 * missing) / (1.0 * packets_per_sample);
-      done_pct = (curr_packet - startpacket) / (endpacket - startpacket) * 100.0;
+      done_pct = 100.0 * (1.0 * curr_packet - startpacket) / (endpacket - startpacket);
       LOG("Compound beam %4i: time %li (%6.2f%%), missing: %6.3f%% (%i)\n", cb_index, curr_packet, done_pct, missing_pct, missing);
 
       //  - reset the packets counter and sequence time
