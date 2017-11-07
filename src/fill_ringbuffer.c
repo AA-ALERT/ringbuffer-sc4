@@ -62,8 +62,8 @@ char *science_modes[] = {"I+TAB", "IQUV+TAB", "I+IAB", "IQUV+IAB"};
 typedef struct {
   unsigned char marker_byte;         // See table 3 in PDF, page 6
   unsigned char format_version;      // Version: 1
-  unsigned char cb_index;            // [0,36] one compound beam per fill_ringbuffer instance:: ignore
-  unsigned char tab_index;           // [0,11] all tabs per fill_ringbuffer instance
+  unsigned char cb_index;            // [0,39] one compound beam per fill_ringbuffer instance:: ignore
+  unsigned char tab_index;           // [0,ntabs-1] all tabs per fill_ringbuffer instance
   unsigned short channel_index;      // [0,1535] all channels per fill_ringbuffer instance
   unsigned short payload_size;       // Stokes I: 6250, IQUV: 8000
   unsigned long timestamp;           // units of 1.28 us, since 1970-01-01 00:00.000 
