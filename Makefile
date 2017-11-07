@@ -27,7 +27,7 @@ CC := gcc
 
 all: src/fill_ringbuffer.c
 	mkdir -p bin
-	$(CC) -o bin/fill_ringbuffer src/fill_ringbuffer.c -DVERSION='"$(VERSION)"' $(DADA_DEPS) -I"$(PSRDADA)/src" $(CFLAGS)
+	$(CC) -o bin/fill_ringbuffer src/fill_ringbuffer.c -DVERSION='"$(VERSION)"' $(DADA_DEPS) -I"$(PSRDADA)/src" $(CFLAGS) $(LDFLAGS)
 
 .PHONY: clean test
 

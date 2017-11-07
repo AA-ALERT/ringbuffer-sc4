@@ -16,6 +16,7 @@
 #include <getopt.h>
 #include <netinet/in.h>
 #include <byteswap.h>
+#include <math.h>
 
 #include "dada_hdu.h"
 #include "futils.h"
@@ -359,7 +360,7 @@ int main(int argc, char** argv) {
   }
 
   // calculate run length
-  endpacket = startpacket + (unsigned long) (duration * TIMEUNIT);
+  endpacket = startpacket + lroundf(duration * TIMEUNIT);
   LOG("fill ringbuffer version: " VERSION "\n");
   LOG("Science case = %i\n", science_case);
   LOG("Science mode = %i [ %s ]\n", science_mode, science_modes[science_mode]);
@@ -526,8 +527,8 @@ int main(int argc, char** argv) {
   // ============================================================
   // run till end time
   // ============================================================
- 
-  while (curr_packet < endpacket) {
+
+  while (1) { // loop is terminated by break statement below
     // go to next packet in the packet buffer
     packet_idx++;
 
@@ -590,9 +591,6 @@ int main(int argc, char** argv) {
         goto exit;
       }
 
-      //  - get a new buffer
-      buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
-
       // - print diagnostics
       missing = packets_per_sample - packets_in_buffer;
       missing_pct = (100.0 * missing) / (1.0 * packets_per_sample);
@@ -602,6 +600,14 @@ int main(int argc, char** argv) {
       //  - reset the packets counter and sequence time
       packets_in_buffer = 0;
       sequence_time = curr_packet;
+
+      // - stop when we have reached (or passed..) end packet
+      if (curr_packet >= endpacket) {
+        goto exit;
+      } else {
+        //  - get a new buffer
+        buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
+      }
     }
 
     // copy to ringbuffer
