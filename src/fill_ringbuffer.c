@@ -457,7 +457,7 @@ int main(int argc, char** argv) {
   memset(msgs, 0, sizeof(msgs));
   for(packet_idx=0; packet_idx < MMSG_VLEN; packet_idx++) {
     iov[packet_idx].iov_base = (char *) &packet_buffer[packet_idx];
-    iov[packet_idx].iov_len = expected_payload;
+    iov[packet_idx].iov_len = expected_payload + PACKHEADER;
 
     msgs[packet_idx].msg_hdr.msg_name    = NULL; // we don't need to know who sent the data
     msgs[packet_idx].msg_hdr.msg_iov     = &iov[packet_idx];
