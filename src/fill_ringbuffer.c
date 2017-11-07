@@ -359,7 +359,7 @@ int main(int argc, char** argv) {
   }
 
   // calculate run length
-  endpacket = startpacket + (int) (duration * TIMEUNIT);
+  endpacket = startpacket + (unsigned long) (duration * TIMEUNIT);
   LOG("fill ringbuffer version: " VERSION "\n");
   LOG("Science case = %i\n", science_case);
   LOG("Science mode = %i [ %s ]\n", science_mode, science_modes[science_mode]);
