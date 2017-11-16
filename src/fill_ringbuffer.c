@@ -332,6 +332,7 @@ int main(int argc, char** argv) {
   size_t required_size = 0;
   int ntabs = 0;
   float done_pct;
+  int sequence_length; // number of packages belonging to a sequence
 
   packet_t packet_buffer[MMSG_VLEN];   // Buffer for batch requesting packets via recvmmsg
   unsigned int packet_idx;             // Current packet index in MMSG buffer
@@ -378,6 +379,7 @@ int main(int argc, char** argv) {
       case 0:
         expected_marker_byte = 0xD0; // I with TAB
         ntabs = 12;
+        sequence_length = 2;
         packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
@@ -386,6 +388,7 @@ int main(int argc, char** argv) {
       case 1:
         expected_marker_byte = 0xD1; // IQUV with TAB
         ntabs = 12;
+        sequence_length = 25;
         packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         required_size = ntabs * NCHANNELS * 12500 * 4;
@@ -394,6 +397,7 @@ int main(int argc, char** argv) {
       case 2:
         expected_marker_byte = 0xD2; // I with IAB
         ntabs = 1;
+        sequence_length = 2;
         packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
@@ -402,6 +406,7 @@ int main(int argc, char** argv) {
       case 3:
         expected_marker_byte = 0xD3; // IQUV with IAB
         ntabs = 1;
+        sequence_length = 25;
         packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         required_size = ntabs * NCHANNELS * 12500 * 4;
@@ -412,6 +417,7 @@ int main(int argc, char** argv) {
       case 0:
         expected_marker_byte = 0xE0; // I with TAB
         ntabs = 12;
+        sequence_length = 4;
         packets_per_sample = ntabs * NCHANNELS * 25000 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
@@ -420,6 +426,7 @@ int main(int argc, char** argv) {
       case 1:
         expected_marker_byte = 0xE1; // IQUV with TAB
         ntabs = 12;
+        sequence_length = 50;
         packets_per_sample = ntabs * NCHANNELS * 25000 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         required_size = ntabs * NCHANNELS * 25000 * 4;
@@ -428,6 +435,7 @@ int main(int argc, char** argv) {
       case 2:
         expected_marker_byte = 0xE2; // I with IAB
         ntabs = 1;
+        sequence_length = 4;
         packets_per_sample = ntabs * NCHANNELS * 25000 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
@@ -436,6 +444,7 @@ int main(int argc, char** argv) {
       case 3:
         expected_marker_byte = 0xE3; // IQUV with IAB
         ntabs = 1;
+        sequence_length = 50;
         packets_per_sample = ntabs * NCHANNELS * 25000 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         required_size = ntabs * NCHANNELS * 25000 * 4;
@@ -613,62 +622,28 @@ int main(int argc, char** argv) {
     // copy to ringbuffer
     if ((science_mode & 1) == 0) {
       // stokes I
-      // packets contains:
-      // timeseries of I
-      // 
+      // packets contains: timeseries of PAYLOADSIZE_STOKESI elements [t0 .. tn]
+      //
       // ring buffer contains matrix:
-      // [tab][channel][time]
+      // [ntabs][NCHANNELS][PAYLOADSIZE_STOKESI]
       memcpy(
-        &buf[((packet->tab_index * NCHANNELS) + curr_channel) * padded_size + packet->sequence_number * expected_payload],
-        packet->record, expected_payload);
+        &buf[((packet->tab_index * NCHANNELS) + curr_channel) * padded_size + packet->sequence_number * PAYLOADSIZE_STOKESI],
+        packet->record, PAYLOADSIZE_STOKESI);
     } else {
       // stokes IQUV
-      // packets contains matrix:
-      // [time=500][4 channels c0 .. c3][the 4 components IQUV]
-      // [time=500][the 4 components IQUV][4 channels c0 .. c3]
-      // 
+      // packets contains matrix: [t0 .. t499][c0 .. c3][the 4 components IQUV] total of 500*4*4=8000 bytes
+      // t0, .., t499 = sequence_number * 500 + tx
+      // c0, c1, c2, c3 = curr_channel + 0, 1, 2, 3
+      //
       // ring buffer contains matrix:
-      // [tab=12][time=25000][the 4 components IQUV][1536 channels]
+      // tab             := packet->tab_index       : ranges from 0 to NTABS
+      // channel_offset  := curr_channel/4          : ranges from 0 to NCHANNELS/4
+      // sequence_number := packet->sequence_number : ranges from 0 to sequence_length
       //
-      // TODO: see if we can get UDP packets containing consecutive data?
-      //
-      // buf[((packet->tab_index * 25000 + packet->sequence_number * 500 + pt) * 4 + ps) * 1536 + curr_channel + pc]
-      //    = packet->record[((pt * 4) + pc) * 4 + ps];
-
-      unsigned char *bufI = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 0) * 1536 + curr_channel];
-      unsigned char *bufQ = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 1) * 1536 + curr_channel];
-      unsigned char *bufU = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 2) * 1536 + curr_channel];
-      unsigned char *bufV = &buf[((packet->tab_index * 25000 + packet->sequence_number * 500) * 4 + 3) * 1536 + curr_channel];
-      unsigned char *r = packet->record;
-      for (pt=0; pt<500; pt++) {
-        // unrolled loop over I Q U V
-        // unrolled loop over channel
-        *bufI++ = *r++;
-        *bufQ++ = *r++;
-        *bufU++ = *r++;
-        *bufV++ = *r++;
-
-        *bufI++ = *r++;
-        *bufQ++ = *r++;
-        *bufU++ = *r++;
-        *bufV++ = *r++;
-
-        *bufI++ = *r++;
-        *bufQ++ = *r++;
-        *bufU++ = *r++;
-        *bufV++ = *r++;
-
-        *bufI   = *r++;
-        *bufQ   = *r++;
-        *bufU   = *r++;
-        *bufV   = *r++;
-
-        // advance one time unit, but compensate for the 3 increases above
-        bufI += 4 * 1536 - 3;
-        bufQ += 4 * 1536 - 3;
-        bufU += 4 * 1536 - 3;
-        bufV += 4 * 1536 - 3;
-      }
+      // [tab][channel_offset][sequence_number][PAYLOADSIZE_STOKESIQUV]
+      memcpy(
+        &buf[(((packet->tab_index * NCHANNELS/4) + curr_channel / 4) * sequence_length) * PAYLOADSIZE_STOKESIQUV],
+        packet->record, PAYLOADSIZE_STOKESIQUV);
     }
 
     // book keeping
