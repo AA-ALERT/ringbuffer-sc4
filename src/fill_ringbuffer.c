@@ -17,6 +17,7 @@
 #include <netinet/in.h>
 #include <byteswap.h>
 #include <math.h>
+#include <signal.h>
 
 #include "dada_hdu.h"
 #include "futils.h"
@@ -53,6 +54,11 @@
 FILE *runlog = NULL;
 
 char *science_modes[] = {"I+TAB", "IQUV+TAB", "I+IAB", "IQUV+IAB"};
+
+// global state needed for SIGTERM shutdown
+dada_hdu_t *signal_hdu = NULL;
+size_t signal_required_size = 0;
+int signal_sockfd = -1;
 
 /*
  * Header description based on:
@@ -152,7 +158,7 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
 
       default:
         printOptions();
-        exit(0);
+        exit(EXIT_SUCCESS);
     }
   }
 
@@ -227,15 +233,15 @@ int init_network(int port) {
 /**
  * Open a connection to the ringbuffer
  * The metadata (header block) is read from file
- * The required_size field is updated with the actual buffer size
+ * The miminum_size field is updated with the actual buffer size
  *
  * @param {dada_hdu_t **} hdu pointer to a pointer of HDU
  * @param {char *} header String containing the header file names to read
  * @param {char *} key String containing the shared memeory keys as hexadecimal numbers
- * @param {size_t *} required_size Minimum required ring buffer page size
+ * @param {size_t *} minimum_size Minimum required ring buffer page size
  * @returns {hdu *} A connected HDU
  */
-dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *required_size) {
+dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *minimum_size) {
   char *buf;
   uint64_t bufsz;
   uint64_t nbufs;
@@ -291,17 +297,45 @@ dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *required_size) {
 
   dada_hdu_db_addresses(hdu, &nbufs, &bufsz);
 
-  if (bufsz < *required_size) {
-    LOG("ERROR. ring buffer data block too small, should be at least %lui\n", *required_size);
+  if (bufsz < *minimum_size) {
+    LOG("ERROR. ring buffer data block too small, should be at least %lui\n", *minimum_size);
     exit(EXIT_FAILURE);
   }
 
   // set the required size to the actual size
   // this is needed when marking a page full.
   // If we need to use the actual buffer size to prevent the stream from closing (too small) or reading outside of the array bounds (too big)
-  *required_size = bufsz;
+  *minimum_size = bufsz;
 
   return hdu;
+}
+
+/**
+ * Try to cleanly shut down, and singal end-of-data on the ring buffer, if possible
+ */
+void clean_exit(int signum) {
+  if (signum == SIGTERM) {
+    LOG("Received SIGTERM, shutting down");
+  }
+
+  if (signal_hdu) {
+    ipcbuf_enable_eod((ipcbuf_t *)signal_hdu->data_block);
+    ipcbuf_mark_filled ((ipcbuf_t *)signal_hdu->data_block, signal_required_size);
+  }
+
+  // clean up and exit
+  fflush(stdout);
+  fflush(stderr);
+  fflush(runlog);
+
+  close(signal_sockfd);
+  fclose(runlog);
+
+  if (signum == SIGTERM) {
+    exit(EXIT_SUCCESS);
+  }
+
+  exit(EXIT_FAILURE);
 }
 
 int main(int argc, char** argv) {
@@ -465,7 +499,7 @@ int main(int argc, char** argv) {
     }
   } else {
     LOG("Science case not supported");
-    goto exit;
+    exit(EXIT_FAILURE);
   }
 
   LOG("Expected marker byte= 0x%X\n", expected_marker_byte);
@@ -521,7 +555,7 @@ int main(int argc, char** argv) {
       // read new packets from the network into the buffer
       if(recvmmsg(sockfd, msgs, MMSG_VLEN, 0, NULL) != MMSG_VLEN) {
         LOG("ERROR Could not read packets\n");
-        goto exit;
+        clean_exit(0);
       }
       // go to start of buffer
       packet_idx = 0;
@@ -544,6 +578,12 @@ int main(int argc, char** argv) {
   // this to compensate for the packet_idx++ statement in the first pass of the mainloop
   packet_idx--;
 
+  // Try to do a clean exit on SIGTERM
+  signal_hdu = hdu;
+  signal_sockfd = sockfd;
+  signal_required_size = required_size;
+  signal(SIGTERM, clean_exit);
+
   LOG("STARTING WITH CB_INDEX=%i\n", cb_index);
 
   // ============================================================
@@ -559,7 +599,7 @@ int main(int argc, char** argv) {
       // read new packets from the network into the buffer
       if(recvmmsg(sockfd, msgs, MMSG_VLEN, 0, NULL) != MMSG_VLEN) {
         LOG("ERROR Could not read packets\n");
-        goto exit;
+        clean_exit(0);
       }
       // go to start of buffer
       packet_idx = 0;
@@ -569,48 +609,54 @@ int main(int argc, char** argv) {
     // check marker byte
     if (packet->marker_byte != expected_marker_byte) {
       LOG("ERROR: wrong marker byte: %x instead of %x\n", packet->marker_byte, expected_marker_byte);
-      goto exit;
+      clean_exit(0);
     }
 
     // check version
     if (packet->format_version != 1) {
       LOG("ERROR: wrong format version: %d instead of %d\n", packet->format_version, 1);
-      goto exit;
+      clean_exit(0);
     }
 
     // check compound beam index 
     if (packet->cb_index != cb_index) {
       LOG("ERROR: unexpected compound beam index %d\n", packet->cb_index);
-      goto exit;
+      clean_exit(0);
     }
 
     // check tab index 
     if (packet->tab_index >= ntabs) {
       LOG("ERROR: unexpected tab index %d\n", packet->tab_index);
-      goto exit;
+      clean_exit(0);
     }
 
     // check channel
     curr_channel = bswap_16(packet->channel_index);
     if (curr_channel >= NCHANNELS) {
       LOG("ERROR: unexpected channel index %d\n", curr_channel);
-      goto exit;
+      clean_exit(0);
     }
 
     // check payload size
     if (packet->payload_size != bswap_16(expected_payload)) {
       LOG("Warning: unexpected payload size %d\n", bswap_16(packet->payload_size));
-      goto exit;
+      clean_exit(0);
     }
 
     // check timestamps
     curr_packet = bswap_64(packet->timestamp);
     if (curr_packet != sequence_time) {
       // start of a new time segment:
+      // - check if this is the last data to process, 
+      if (curr_packet >= endpacket) {
+        // set End-Of-Data on the ringbuffer to have a clean shutdown of the pipeline
+        ipcbuf_enable_eod((ipcbuf_t *)hdu->data_block);
+      }
+
       //  - mark the ringbuffer as filled
       if (ipcbuf_mark_filled ((ipcbuf_t *)hdu->data_block, required_size) < 0) {
         LOG("ERROR: cannot mark buffer as filled\n");
-        goto exit;
+        clean_exit(0);
       }
 
       // - print diagnostics
@@ -625,7 +671,7 @@ int main(int argc, char** argv) {
 
       // - stop when we have reached (or passed..) end packet
       if (curr_packet >= endpacket) {
-        goto exit;
+        clean_exit(0);
       } else {
         //  - get a new buffer
         buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
@@ -664,7 +710,6 @@ int main(int argc, char** argv) {
   }
 
   // clean up and exit
-exit:
   fflush(stdout);
   fflush(stderr);
   fflush(runlog);
