@@ -82,8 +82,8 @@ typedef struct {
  * Print commandline optinos
  */
 void printOptions() {
-  printf("usage: fill_ringbuffer -h <header file> -k <hexadecimal key> -c <science case> -s <start packet number> -d <duration (s)> -p <port> -l <logfile>\n");
-  printf("e.g. fill_ringbuffer -h \"header1.txt\" -k 10 -s 11565158400000 -d 3600 -p 4000 -l log.txt\n");
+  printf("usage: fill_ringbuffer -h <header file> -k <hexadecimal key> -c <science case> -m <science mode> -s <start packet number> -d <duration (s)> -p <port> -l <logfile>\n");
+  printf("e.g. fill_ringbuffer -h \"header1.txt\" -k 10 -s 11565158400000 -c 3 -m 0 -d 3600 -p 4000 -l log.txt\n");
   return;
 }
 
@@ -142,20 +142,12 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
       case('c'):
         *science_case = atoi(optarg);
         setc=1;
-        if (*science_case < 3 || *science_case > 4) {
-          printOptions();
-          exit(0);
-        }
         break;
 
       // -m mode
       case('m'):
         *science_mode = atoi(optarg);
         setm=1;
-        if (*science_mode < 0 || *science_mode > 4) {
-          printOptions();
-          exit(0);
-        }
         break;
 
       default:
@@ -166,7 +158,15 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
 
   // All arguments are required
   if (!seth || !setk || !sets || !setd || !setp || !setl || !setb || !setc || !setm) {
-    printOptions();
+    if (!seth) fprintf(stderr, "DADA header not set\n");
+    if (!setk) fprintf(stderr, "DADA key not set\n");
+    if (!sets) fprintf(stderr, "Start packet not set\n");
+    if (!setd) fprintf(stderr, "Duration not set\n");
+    if (!setp) fprintf(stderr, "Port not set\n");
+    if (!setl) fprintf(stderr, "Log file not set\n");
+    if (!setb) fprintf(stderr, "Padding for Stokes I not set\n");
+    if (!setc) fprintf(stderr, "Science case not set\n");
+    if (!setm) fprintf(stderr, "Science mode not set\n");
     exit(EXIT_FAILURE);
   }
 }
@@ -327,7 +327,6 @@ int main(int argc, char** argv) {
   char *header;
   char *key;
   char *logfile;
-  int pt;
   const char mode = 'w';
   size_t required_size = 0;
   int ntabs = 0;
@@ -347,6 +346,10 @@ int main(int argc, char** argv) {
   unsigned long packets_in_buffer;  // number of records processed per time segment
 
   // parse commandline
+  if (argc == 1) {
+    printOptions();
+    exit(EXIT_FAILURE);
+  }
   parseOptions(argc, argv, &header, &key, &science_case, &science_mode, &startpacket, &duration, &port, &padded_size, &logfile);
 
   // set up logging
@@ -411,6 +414,11 @@ int main(int argc, char** argv) {
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         required_size = ntabs * NCHANNELS * 12500 * 4;
         break;
+
+      default:
+        fprintf(stderr, "Illegal science mode: '%i'\n", science_mode);
+        exit(EXIT_FAILURE);
+        break;
     }
   } else if (science_case == 4) {
     switch (science_mode) {
@@ -448,6 +456,11 @@ int main(int argc, char** argv) {
         packets_per_sample = ntabs * NCHANNELS * 25000 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         required_size = ntabs * NCHANNELS * 25000 * 4;
+        break;
+
+      default:
+        fprintf(stderr, "Illegal science mode: '%i'\n", science_mode);
+        exit(EXIT_FAILURE);
         break;
     }
   } else {
