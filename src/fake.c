@@ -20,7 +20,6 @@
 #include "dada_hdu.h"
 #include "futils.h"
 
-#define NTABS       12
 #define NCHANNELS 1536
 
 #define UMSBATCH (1000000.0)       // sleep time in microseconds between sending batches
@@ -179,6 +178,12 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
 
   // All arguments are required
   if (!seth || !setk || !setd || !setl || !setb || !setc || !setm) {
+    if (!seth) fprintf(stderr, "Header file not set\n");
+    if (!setk) fprintf(stderr, "DADA key not set\n");
+    if (!setd) fprintf(stderr, "Duration not set\n");
+    if (!setl) fprintf(stderr, "Logfile not set\n");
+    if (!setc) fprintf(stderr, "Science case not set\n");
+    if (!setm) fprintf(stderr, "Science mode not set\n");
     printOptions();
     exit(EXIT_FAILURE);
   }
@@ -273,6 +278,8 @@ int main(int argc, char** argv) {
   int duration;            // run time in seconds
   int science_case;        // 3 or 4
   int science_mode;        // 0: I+TAB, 1: IQUV+TAB, 2: I+IAB, 3: IQUV+IAB
+  int ntabs;
+  int ntimes;
   int padded_size;
 
   // local vars
@@ -303,26 +310,29 @@ int main(int argc, char** argv) {
   LOG("Duration (batches) = %i\n", duration);
 
   if (science_case == 3) {
+    ntimes = 12500;
     switch (science_mode) {
-      case 0: break;
-      case 1: break;
-      case 2: break;
-      case 3: break;
+      case 0: ntabs = 12; break;
+      case 1: ntabs = 12; break;
+      case 2: ntabs = 1; break;
+      case 3: ntabs = 1; break;
       default:
         LOG("Science mode not supported");
         break;
     }
   } else if (science_case == 4) {
+    ntimes = 25000;
     switch (science_mode) {
-      case 0: break;
-      case 1: break;
-      case 2: break;
-      case 3: break;
+      case 0: ntabs = 12; break;
+      case 1: ntabs = 12; break;
+      case 2: ntabs = 1; break;
+      case 3: ntabs = 1; break;
       default:
         LOG("Science mode not supported");
         break;
     }
   } else {
+    ntabs = 1;
     LOG("Science case not supported");
     goto exit;
   }
@@ -333,15 +343,28 @@ int main(int argc, char** argv) {
   free(header);
   free(key);
 
-  // get a new buffer
-  buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
-
   // ============================================================
   // run till end time
   // ============================================================
 
   int batch;
   for (batch = 0; batch < duration; batch++) {
+    // get a new buffer
+    buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
+
+    if (batch == duration-1) {
+      ipcbuf_enable_eod((ipcbuf_t *)hdu->data_block);
+    }
+
+    if (ipcbuf_mark_filled ((ipcbuf_t *) hdu->data_block, required_size) < 0) {
+      LOG("ERROR: cannot mark buffer as filled\n");
+      goto exit;
+    }
+
+    // slow down sending a bit
+    usleep(UMSBATCH);
+
+    /*
     // copy to ringbuffer
     if ((science_mode & 1) == 0) {
       // ring buffer contains matrix:
@@ -360,24 +383,17 @@ int main(int argc, char** argv) {
         52.5,          // minFreq
         7732.5,        // maxFreq
         5,             // bandwidth
-        NTABS,         // size of the tab dimension of the data array
+        ntabs,         // size of the tab dimension of the data array
         NCHANNELS,     // size of the channel dimension of data array
-        25000,         // the number of samples per channel in a batch (ie. time dimension)
+        ntimes,        // the number of samples per channel in a batch (ie. time dimension)
         padded_size,   // actual size of the time dimension of data array, ie nsamples + padding
         batch,         // batch number
         (unsigned char *) buf            // Byte array of size [ntabs][nchannels][paddedSize]
       );
-
-      if (ipcbuf_mark_filled ((ipcbuf_t *) hdu->data_block, required_size) < 0) {
-        LOG("ERROR: cannot mark buffer as filled\n");
-        goto exit;
-      }
     } else {
       // stokes IQUV
     }
-
-    // slow down sending a bit
-    usleep(UMSBATCH);
+    */
   }
 
   // clean up and exit
