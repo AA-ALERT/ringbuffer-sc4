@@ -17,6 +17,7 @@
 #include <netinet/in.h>
 #include <byteswap.h>
 
+#include "ascii_header.h"
 #include "dada_hdu.h"
 #include "futils.h"
 
@@ -106,18 +107,18 @@ void generatePulsar(
  * Print commandline optinos
  */
 void printOptions() {
-  printf("usage: fill_fake -h <header file> -k <hexadecimal key> -c <science case> -d <duration (s)> -p <padded size> -l <logfile>\n");
-  printf("e.g. fill_fake -h \"header1.txt\" -k dada -c 4 -m 0 -d 60 -l log.txt\n");
+  printf("usage: fill_fake -h <header file> -k <hexadecimal key> -d <duration (s)> -l <logfile>\n");
+  printf("e.g. fill_fake -h \"header1.txt\" -k dada -d 60 -l log.txt\n");
   return;
 }
 
 /**
  * Parse commandline
  */
-void parseOptions(int argc, char*argv[], char **header, char **key, int *science_case, int *science_mode, int *duration, int *padded_size, char **logfile) {
+void parseOptions(int argc, char*argv[], char **header, char **key, int *duration, char **logfile) {
   int c;
 
-  int seth=0, setk=0, setd=0, setb=0, setl=0, setc=0, setm=0;
+  int seth=0, setk=0, setd=0, setb=0, setl=0;
   while((c=getopt(argc,argv,"h:k:d:p:b:l:c:m:"))!=-1) {
     switch(c) {
       // -h <heaer_file>
@@ -138,36 +139,10 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
         setd=1;
         break;
 
-      // -b padded_size (bytes)
-      case('b'):
-        *padded_size = atoi(optarg);
-        setb=1;
-        break;
-
       // -l log file
       case('l'):
         *logfile = strdup(optarg);
         setl=1;
-        break;
-
-      // -c case
-      case('c'):
-        *science_case = atoi(optarg);
-        setc=1;
-        if (*science_case < 3 || *science_case > 4) {
-          printOptions();
-          exit(0);
-        }
-        break;
-
-      // -m mode
-      case('m'):
-        *science_mode = atoi(optarg);
-        setm=1;
-        if (*science_mode < 0 || *science_mode > 4) {
-          printOptions();
-          exit(0);
-        }
         break;
 
       default:
@@ -177,13 +152,11 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
   }
 
   // All arguments are required
-  if (!seth || !setk || !setd || !setl || !setb || !setc || !setm) {
+  if (!seth || !setk || !setd || !setl) {
     if (!seth) fprintf(stderr, "Header file not set\n");
     if (!setk) fprintf(stderr, "DADA key not set\n");
     if (!setd) fprintf(stderr, "Duration not set\n");
     if (!setl) fprintf(stderr, "Logfile not set\n");
-    if (!setc) fprintf(stderr, "Science case not set\n");
-    if (!setm) fprintf(stderr, "Science mode not set\n");
     printOptions();
     exit(EXIT_FAILURE);
   }
@@ -194,14 +167,17 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
  * The metadata (header block) is read from file
  * The required_size field is updated with the actual buffer size
  *
- * @param {dada_hdu_t **} hdu pointer to a pointer of HDU
- * @param {char *} header String containing the header file names to read
+ * @param {char *} filename String containing the header file names to read
  * @param {char *} key String containing the shared memeory keys as hexadecimal numbers
  * @param {size_t *} required_size Minimum required ring buffer page size
+ * @param {int *} science_case read from header, and value stored here
+ * @param {int *} science_mode read from header, and value stored here
+ * @param {int *} padded_size read from header, and value stored here
  * @returns {hdu *} A connected HDU
  */
-dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *required_size) {
+dada_hdu_t *init_ringbuffer(char *filename, char *key, size_t *required_size, int *science_case, int *science_mode, int *padded_size) {
   char *buf;
+  int incomplete_header = 0;
   uint64_t bufsz;
   uint64_t nbufs;
   dada_hdu_t *hdu;
@@ -242,8 +218,25 @@ dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *required_size) {
   }
 
   // read header from file
-  if (fileread (header, buf, bufsz) < 0) { 
-    LOG("ERROR. Cannot read header from %s\n", header);
+  if (fileread (filename, buf, bufsz) < 0) {
+    LOG("ERROR. Cannot read header from %s\n", filename);
+    exit(EXIT_FAILURE);
+  }
+
+  // parse relevant metadata for ourselves
+  if (ascii_header_get(buf, "SCIENCE_CASE", "%i", science_case) == -1) {
+    LOG("ERROR. SCIENCE_CASE not set in dada header\n");
+    incomplete_header = 1;
+  }
+  if (ascii_header_get(buf, "SCIENCE_MODE", "%i", science_mode) == -1) {
+    LOG("ERROR. SCIENCE_MODE not set in dada header\n");
+    incomplete_header = 1;
+  }
+  if (ascii_header_get(buf, "PADDED_SIZE", "%i", padded_size) == -1) {
+    LOG("ERROR. PADDED_SIZE not set in dada header\n");
+    incomplete_header = 1;
+  }
+  if (incomplete_header) {
     exit(EXIT_FAILURE);
   }
 
@@ -252,12 +245,12 @@ dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *required_size) {
     LOG("ERROR. Could not mark filled header block\n");
     exit(EXIT_FAILURE);
   }
-  LOG("psrdada HEADER: %s\n", header);
+  LOG("psrdada HEADER: %s\n", filename);
 
   dada_hdu_db_addresses(hdu, &nbufs, &bufsz);
 
   if (bufsz < *required_size) {
-    LOG("ERROR. ring buffer data block too small, should be at least %li\n", required_size);
+    LOG("ERROR. ring buffer data block too small, should be at least %lu\n", *required_size);
     exit(EXIT_FAILURE);
   }
 
@@ -290,7 +283,7 @@ int main(int argc, char** argv) {
   size_t required_size = 0;
 
   // parse commandline
-  parseOptions(argc, argv, &header, &key, &science_case, &science_mode, &duration, &padded_size, &logfile);
+  parseOptions(argc, argv, &header, &key, &duration, &logfile);
 
   // set up logging
   if (logfile) {
@@ -302,9 +295,15 @@ int main(int argc, char** argv) {
     LOG("Logging to logfile: %s\n", logfile);
     free (logfile);
   }
-
-  // calculate run length
   LOG("fill_fake version: " VERSION "\n");
+
+  // ring buffer
+  LOG("Connecting to ringbuffer\n");
+  hdu = init_ringbuffer(header, key, &required_size, &science_case, &science_mode, &padded_size);
+
+  free(header); header = NULL;
+  free(key); key = NULL;
+
   LOG("Science case = %i\n", science_case);
   LOG("Science mode = %i [ %s ]\n", science_mode, science_modes[science_mode]);
   LOG("Duration (batches) = %i\n", duration);
@@ -336,12 +335,6 @@ int main(int argc, char** argv) {
     LOG("Science case not supported");
     goto exit;
   }
-
-  // ring buffer
-  LOG("Connecting to ringbuffer\n");
-  hdu = init_ringbuffer(header, key, &required_size);
-  free(header);
-  free(key);
 
   // ============================================================
   // run till end time
