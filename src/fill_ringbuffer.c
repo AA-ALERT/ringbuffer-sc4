@@ -20,6 +20,7 @@
 #include <signal.h>
 
 #include "dada_hdu.h"
+#include "ascii_header.h"
 #include "futils.h"
 
 #define PACKHEADER 114                   // Size of the packet header = PACKETSIZE-PAYLOADSIZE in bytes
@@ -96,11 +97,11 @@ void printOptions() {
 /**
  * Parse commandline
  */
-void parseOptions(int argc, char*argv[], char **header, char **key, int *science_case, int *science_mode, unsigned long *startpacket, float *duration, int *port, int *padded_size, char **logfile) {
+void parseOptions(int argc, char*argv[], char **header, char **key, unsigned long *startpacket, float *duration, int *port, char **logfile) {
   int c;
 
-  int seth=0, setk=0, sets=0, setd=0, setp=0, setb=0, setl=0, setc=0, setm=0;
-  while((c=getopt(argc,argv,"h:k:s:d:p:b:l:c:m:"))!=-1) {
+  int seth=0, setk=0, sets=0, setd=0, setp=0, setl=0;
+  while((c=getopt(argc,argv,"h:k:s:d:p:l:"))!=-1) {
     switch(c) {
       // -h <heaer_file>
       case('h'):
@@ -132,28 +133,10 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
         setp=1;
         break;
 
-      // -b padded_size (bytes)
-      case('b'):
-        *padded_size = atoi(optarg);
-        setb=1;
-        break;
-
       // -l log file
       case('l'):
         *logfile = strdup(optarg);
         setl=1;
-        break;
-
-      // -c case
-      case('c'):
-        *science_case = atoi(optarg);
-        setc=1;
-        break;
-
-      // -m mode
-      case('m'):
-        *science_mode = atoi(optarg);
-        setm=1;
         break;
 
       default:
@@ -163,16 +146,13 @@ void parseOptions(int argc, char*argv[], char **header, char **key, int *science
   }
 
   // All arguments are required
-  if (!seth || !setk || !sets || !setd || !setp || !setl || !setb || !setc || !setm) {
+  if (!seth || !setk || !sets || !setd || !setp || !setl) {
     if (!seth) fprintf(stderr, "DADA header not set\n");
     if (!setk) fprintf(stderr, "DADA key not set\n");
     if (!sets) fprintf(stderr, "Start packet not set\n");
     if (!setd) fprintf(stderr, "Duration not set\n");
     if (!setp) fprintf(stderr, "Port not set\n");
     if (!setl) fprintf(stderr, "Log file not set\n");
-    if (!setb) fprintf(stderr, "Padding for Stokes I not set\n");
-    if (!setc) fprintf(stderr, "Science case not set\n");
-    if (!setm) fprintf(stderr, "Science mode not set\n");
     exit(EXIT_FAILURE);
   }
 }
@@ -236,16 +216,20 @@ int init_network(int port) {
  * The miminum_size field is updated with the actual buffer size
  *
  * @param {dada_hdu_t **} hdu pointer to a pointer of HDU
- * @param {char *} header String containing the header file names to read
+ * @param {char *} header String containing the header file name to read
  * @param {char *} key String containing the shared memeory keys as hexadecimal numbers
  * @param {size_t *} minimum_size Minimum required ring buffer page size
+ * @param {int *} science_case read from the header file, and stored here
+ * @param {int *} science_mode read from the header file, and stored here
+ * @param {int *} padded_size read from the header file, and stored here
  * @returns {hdu *} A connected HDU
  */
-dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *minimum_size) {
+dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *minimum_size, int *science_case, int *science_mode, int *padded_size) {
   char *buf;
   uint64_t bufsz;
   uint64_t nbufs;
   dada_hdu_t *hdu;
+  int header_incomplete = 0;
 
   key_t shmkey;
 
@@ -285,6 +269,25 @@ dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *minimum_size) {
   // read header from file
   if (fileread (header, buf, bufsz) < 0) { 
     LOG("ERROR. Cannot read header from %s\n", header);
+    header_incomplete = 1;
+    exit(EXIT_FAILURE);
+  }
+
+  if (ascii_header_get(buf, "SCIENCE_CASE", "%i", science_case) == -1) {
+    LOG("ERROR. SCIENCE_CASE not set in header\n");
+    header_incomplete = 1;
+  }
+  if (ascii_header_get(buf, "SCIENCE_MODE", "%i", science_mode) == -1) {
+    LOG("ERROR. SCIENCE_CASE not set in header\n");
+    header_incomplete = 1;
+  }
+  if (ascii_header_get(buf, "PADDED_SIZE", "%i", padded_size) == -1) {
+    LOG("ERROR. PADDED_SIZE not set in header\n");
+    header_incomplete = 1;
+  }
+
+  LOG("psrdada HEADER: %s\n", header);
+  if (header_incomplete) {
     exit(EXIT_FAILURE);
   }
 
@@ -293,7 +296,6 @@ dada_hdu_t *init_ringbuffer(char *header, char *key, size_t *minimum_size) {
     LOG("ERROR. Could not mark filled header block\n");
     exit(EXIT_FAILURE);
   }
-  LOG("psrdada HEADER: %s\n", header);
 
   dada_hdu_db_addresses(hdu, &nbufs, &bufsz);
 
@@ -384,7 +386,7 @@ int main(int argc, char** argv) {
     printOptions();
     exit(EXIT_FAILURE);
   }
-  parseOptions(argc, argv, &header, &key, &science_case, &science_mode, &startpacket, &duration, &port, &padded_size, &logfile);
+  parseOptions(argc, argv, &header, &key, &startpacket, &duration, &port, &logfile);
 
   // set up logging
   if (logfile) {
@@ -396,10 +398,17 @@ int main(int argc, char** argv) {
     LOG("Logging to logfile: %s\n", logfile);
     free (logfile);
   }
+  LOG("fill ringbuffer version: " VERSION "\n");
+
+  // ring buffer
+  LOG("Connecting to ringbuffer\n");
+  hdu = init_ringbuffer(header, key, &required_size, &science_case, &science_mode, &padded_size); // sets required_size to actual size
+
+  free(header); header = NULL;
+  free(key); key = NULL;
 
   // calculate run length
   endpacket = startpacket + lroundf(duration * TIMEUNIT);
-  LOG("fill ringbuffer version: " VERSION "\n");
   LOG("Science case = %i\n", science_case);
   LOG("Science mode = %i [ %s ]\n", science_mode, science_modes[science_mode]);
   LOG("Start time (unix time) = %lu\n", startpacket / TIMEUNIT);
@@ -521,12 +530,6 @@ int main(int argc, char** argv) {
     msgs[packet_idx].msg_hdr.msg_iovlen  = 1;
     msgs[packet_idx].msg_hdr.msg_control = NULL; // we're not interested in OoB data
   }
-
-  // ring buffer
-  LOG("Connecting to ringbuffer\n");
-  hdu = init_ringbuffer(header, key, &required_size); // sets required_size to actual size
-  free(header);
-  free(key);
 
   // clear packet counters
   packets_in_buffer = 0;
