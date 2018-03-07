@@ -679,7 +679,7 @@ int main(int argc, char** argv) {
         //  - get a new buffer
         buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
       }
-    } else if (curr_packet <= sequence_time) {
+    } else if (curr_packet < sequence_time) {
       // packet belongs to previous sequence, but we have already released that dada ringbuffer page
       continue;
     }
