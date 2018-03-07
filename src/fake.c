@@ -118,8 +118,8 @@ void printOptions() {
 void parseOptions(int argc, char*argv[], char **header, char **key, int *duration, char **logfile) {
   int c;
 
-  int seth=0, setk=0, setd=0, setb=0, setl=0;
-  while((c=getopt(argc,argv,"h:k:d:p:b:l:c:m:"))!=-1) {
+  int seth=0, setk=0, setd=0, setl=0;
+  while((c=getopt(argc,argv,"h:k:d:l:"))!=-1) {
     switch(c) {
       // -h <heaer_file>
       case('h'):
