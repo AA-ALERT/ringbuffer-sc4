@@ -648,7 +648,7 @@ int main(int argc, char** argv) {
 
     // check timestamps
     curr_packet = bswap_64(packet->timestamp);
-    if (curr_packet != sequence_time) {
+    if (curr_packet > sequence_time) {
       // start of a new time segment:
       // - check if this is the last data to process, 
       if (curr_packet >= endpacket) {
@@ -679,6 +679,9 @@ int main(int argc, char** argv) {
         //  - get a new buffer
         buf = ipcbuf_get_next_write ((ipcbuf_t *)hdu->data_block);
       }
+    } else if (curr_packet <= sequence_time) {
+      // packet belongs to previous sequence, but we have already released that dada ringbuffer page
+      continue;
     }
 
     // copy to ringbuffer
