@@ -22,6 +22,7 @@
 #include "dada_hdu.h"
 #include "ascii_header.h"
 #include "futils.h"
+#include "config.h"
 
 #define PACKHEADER 114                   // Size of the packet header = PACKETSIZE-PAYLOADSIZE in bytes
 
