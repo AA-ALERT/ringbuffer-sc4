@@ -4,6 +4,8 @@ project(ringbuffer-sc4 C)
 
 set (CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/cmake)
 
+set(CMAKE_C_FLAGS_RELEASE "-O3")
+
 find_package (psrdada REQUIRED)
 find_package (CUDA REQUIRED)
 
