@@ -24,6 +24,6 @@ add_executable(send src/send.c)
 
 add_executable(fake src/fake.c)
 target_link_libraries(fake ${PSRDADA_LIBRARIES})
-target_link_libraries(fake ${CUDA_LIBRARIES})
+#target_link_libraries(fake ${CUDA_LIBRARIES})
 
 install(TARGETS fill_ringbuffer send fake RUNTIME DESTINATION bin)
