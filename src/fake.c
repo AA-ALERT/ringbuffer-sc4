@@ -20,6 +20,7 @@
 #include "ascii_header.h"
 #include "dada_hdu.h"
 #include "futils.h"
+#include "config.h"
 
 #define NCHANNELS 1536
 
