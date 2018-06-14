@@ -57,6 +57,10 @@ FILE *runlog = NULL;
 
 char *science_modes[] = {"I+TAB", "IQUV+TAB", "I+IAB", "IQUV+IAB"};
 
+// Due to issues with the FPGAs upstream from us, the packet headers are wrong.
+// Work around it for now by using this table with correct frequencies. (search for FREQISSUE below)
+extern const int remap_frequency_sc4[1536];
+
 // global state needed for SIGTERM shutdown
 dada_hdu_t *signal_hdu = NULL;
 size_t signal_required_size = 0;
@@ -92,18 +96,24 @@ typedef struct {
 void printOptions() {
   printf("usage: fill_ringbuffer -h <header file> -k <hexadecimal key> -c <science case> -m <science mode> -s <start packet number> -d <duration (s)> -p <port> -l <logfile>\n");
   printf("e.g. fill_ringbuffer -h \"header1.txt\" -k 10 -s 11565158400000 -c 3 -m 0 -d 3600 -p 4000 -l log.txt\n");
+  printf("\n\nA workaround for the incorrect frequencies in the packets headers for science case 4, stokesI, can be enabled with '-f'\n");
   return;
 }
 
 /**
  * Parse commandline
  */
-void parseOptions(int argc, char*argv[], char **header, char **key, unsigned long *startpacket, float *duration, int *port, char **logfile) {
+void parseOptions(int argc, char*argv[], char **header, char **key, unsigned long *startpacket, float *duration, int *port, char **logfile, int *freqissue_workaround) {
   int c;
 
   int seth=0, setk=0, sets=0, setd=0, setp=0, setl=0;
-  while((c=getopt(argc,argv,"h:k:s:d:p:l:"))!=-1) {
+  while((c=getopt(argc,argv,"h:k:s:d:p:l:f"))!=-1) {
     switch(c) {
+      // -f work around for the FREQISSUE
+      case('f'):
+        *freqissue_workaround = 1;
+        break;
+
       // -h <heaer_file>
       case('h'):
         *header = strdup(optarg);
@@ -359,6 +369,7 @@ int main(int argc, char** argv) {
   unsigned long startpacket;           // Packet number to start (in units of TIMEUNIT since unix epoch)
   unsigned long endpacket;             // Packet number to stop (excluded) (in units of TIMEUNIT since unix epoch)
   int padded_size;
+  int freqissue_workaround = 0; // Do we need to work around the FREQISSUE bug?
 
   // local vars
   char *header;
@@ -387,7 +398,7 @@ int main(int argc, char** argv) {
     printOptions();
     exit(EXIT_FAILURE);
   }
-  parseOptions(argc, argv, &header, &key, &startpacket, &duration, &port, &logfile);
+  parseOptions(argc, argv, &header, &key, &startpacket, &duration, &port, &logfile, &freqissue_workaround);
 
   // set up logging
   if (logfile) {
@@ -692,9 +703,21 @@ int main(int argc, char** argv) {
       //
       // ring buffer contains matrix:
       // [ntabs][NCHANNELS][PAYLOADSIZE_STOKESI]
-      memcpy(
-        &buf[((packet->tab_index * NCHANNELS) + curr_channel) * padded_size + packet->sequence_number * PAYLOADSIZE_STOKESI],
-        packet->record, PAYLOADSIZE_STOKESI);
+
+      if (freqissue_workaround) {
+        // Work around the FREQISSUE described above
+        curr_channel = remap_frequency_sc4[curr_channel];
+
+        if (curr_channel != 9999) {
+          memcpy(
+            &buf[((packet->tab_index * NCHANNELS) + curr_channel) * padded_size + packet->sequence_number * PAYLOADSIZE_STOKESI],
+            packet->record, PAYLOADSIZE_STOKESI);
+        }
+      } else {
+        memcpy(
+          &buf[((packet->tab_index * NCHANNELS) + curr_channel) * padded_size + packet->sequence_number * PAYLOADSIZE_STOKESI],
+          packet->record, PAYLOADSIZE_STOKESI);
+      }
     } else {
       // stokes IQUV
       // packets contains matrix: [t0 .. t499][c0 .. c3][the 4 components IQUV] total of 500*4*4=8000 bytes
