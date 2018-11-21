@@ -480,8 +480,8 @@ int main(int argc, char** argv) {
       case 0:
         expected_marker_byte = 0xE0; // I with TAB
         ntabs = 12;
-        sequence_length = 4;
-        packets_per_sample = ntabs * NCHANNELS * 25000 * 1 / 6250;
+        sequence_length = 2;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
         break;
@@ -498,8 +498,8 @@ int main(int argc, char** argv) {
       case 2:
         expected_marker_byte = 0xE2; // I with IAB
         ntabs = 1;
-        sequence_length = 4;
-        packets_per_sample = ntabs * NCHANNELS * 25000 * 1 / 6250;
+        sequence_length = 2;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
         break;
