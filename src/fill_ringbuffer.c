@@ -46,7 +46,7 @@
  * [tab_index][channel][record] of sizes [0..11][0..1535][0..paddedsize-1] = 18432 * paddedsize for a ringbuffer page
  *
  * SC3: records per 1.024s 12500
- * SC4: records per 1.024s 25000
+ * SC4: records per 1.024s 12500
  */
 
 #define NCHANNELS 1536
@@ -490,9 +490,9 @@ int main(int argc, char** argv) {
         expected_marker_byte = 0xE1; // IQUV with TAB
         ntabs = 12;
         sequence_length = 50;
-        packets_per_sample = ntabs * NCHANNELS * 25000 * 4 / 8000;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = ntabs * NCHANNELS * 25000 * 4;
+        required_size = ntabs * NCHANNELS * 12500 * 4;
         break;
 
       case 2:
@@ -508,9 +508,9 @@ int main(int argc, char** argv) {
         expected_marker_byte = 0xE3; // IQUV with IAB
         ntabs = 1;
         sequence_length = 50;
-        packets_per_sample = ntabs * NCHANNELS * 25000 * 4 / 8000;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = ntabs * NCHANNELS * 25000 * 4;
+        required_size = ntabs * NCHANNELS * 12500 * 4;
         break;
 
       default:
