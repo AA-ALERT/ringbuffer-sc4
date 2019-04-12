@@ -489,7 +489,7 @@ int main(int argc, char** argv) {
       case 1:
         expected_marker_byte = 0xE1; // IQUV with TAB
         ntabs = 12;
-        sequence_length = 50;
+        sequence_length = 25;
         packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         required_size = ntabs * NCHANNELS * 12500 * 4;
@@ -507,7 +507,7 @@ int main(int argc, char** argv) {
       case 3:
         expected_marker_byte = 0xE3; // IQUV with IAB
         ntabs = 1;
-        sequence_length = 50;
+        sequence_length = 25;
         packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
         required_size = ntabs * NCHANNELS * 12500 * 4;
