@@ -731,7 +731,7 @@ int main(int argc, char** argv) {
       //
       // [tab][channel_offset][sequence_number][PAYLOADSIZE_STOKESIQUV]
       memcpy(
-        &buf[(((packet->tab_index * NCHANNELS/4) + curr_channel / 4) * sequence_length) * PAYLOADSIZE_STOKESIQUV],
+        &buf[(((packet->tab_index * NCHANNELS/4) + curr_channel / 4) * sequence_length + packet->sequence_number) * PAYLOADSIZE_STOKESIQUV],
         packet->record, PAYLOADSIZE_STOKESIQUV);
     }
 
