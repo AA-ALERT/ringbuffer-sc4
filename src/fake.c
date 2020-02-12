@@ -321,7 +321,7 @@ int main(int argc, char** argv) {
         break;
     }
   } else if (science_case == 4) {
-    ntimes = 25000;
+    ntimes = 12500;
     switch (science_mode) {
       case 0: ntabs = 12; break;
       case 1: ntabs = 12; break;

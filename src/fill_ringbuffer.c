@@ -46,7 +46,7 @@
  * [tab_index][channel][record] of sizes [0..11][0..1535][0..paddedsize-1] = 18432 * paddedsize for a ringbuffer page
  *
  * SC3: records per 1.024s 12500
- * SC4: records per 1.024s 25000
+ * SC4: records per 1.024s 12500
  */
 
 #define NCHANNELS 1536
@@ -480,8 +480,8 @@ int main(int argc, char** argv) {
       case 0:
         expected_marker_byte = 0xE0; // I with TAB
         ntabs = 12;
-        sequence_length = 4;
-        packets_per_sample = ntabs * NCHANNELS * 25000 * 1 / 6250;
+        sequence_length = 2;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
         break;
@@ -489,17 +489,17 @@ int main(int argc, char** argv) {
       case 1:
         expected_marker_byte = 0xE1; // IQUV with TAB
         ntabs = 12;
-        sequence_length = 50;
-        packets_per_sample = ntabs * NCHANNELS * 25000 * 4 / 8000;
+        sequence_length = 25;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = ntabs * NCHANNELS * 25000 * 4;
+        required_size = ntabs * NCHANNELS * 12500 * 4;
         break;
 
       case 2:
         expected_marker_byte = 0xE2; // I with IAB
         ntabs = 1;
-        sequence_length = 4;
-        packets_per_sample = ntabs * NCHANNELS * 25000 * 1 / 6250;
+        sequence_length = 2;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
         break;
@@ -507,10 +507,10 @@ int main(int argc, char** argv) {
       case 3:
         expected_marker_byte = 0xE3; // IQUV with IAB
         ntabs = 1;
-        sequence_length = 50;
-        packets_per_sample = ntabs * NCHANNELS * 25000 * 4 / 8000;
+        sequence_length = 25;
+        packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = ntabs * NCHANNELS * 25000 * 4;
+        required_size = ntabs * NCHANNELS * 12500 * 4;
         break;
 
       default:
@@ -731,7 +731,7 @@ int main(int argc, char** argv) {
       //
       // [tab][channel_offset][sequence_number][PAYLOADSIZE_STOKESIQUV]
       memcpy(
-        &buf[(((packet->tab_index * NCHANNELS/4) + curr_channel / 4) * sequence_length) * PAYLOADSIZE_STOKESIQUV],
+        &buf[(((packet->tab_index * NCHANNELS/4) + curr_channel / 4) * sequence_length + packet->sequence_number) * PAYLOADSIZE_STOKESIQUV],
         packet->record, PAYLOADSIZE_STOKESIQUV);
     }
 
