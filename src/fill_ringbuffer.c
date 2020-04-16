@@ -45,8 +45,8 @@
  * Send on to ringbuffer a single second of data as a three dimensional array:
  * [tab_index][channel][record] of sizes [0..11][0..1535][0..paddedsize-1] = 18432 * paddedsize for a ringbuffer page
  *
- * SC3: records per 1.024s 12500
- * SC4: records per 1.024s 12500
+ * SC3: records per 1.024s 12500; 9 TABs
+ * SC4: records per 1.024s 12500; 12 TABs
  */
 
 #define NCHANNELS 1536
@@ -81,7 +81,7 @@ typedef struct {
   unsigned short payload_size;       // Stokes I: 6250, IQUV: 8000
   unsigned long timestamp;           // units of 1.28 us, since 1970-01-01 00:00.000 
   unsigned char sequence_number;     // SC3: Stokes I: 0-1, Stokes IQUV: 0-24
-                                     // SC4: Stokes I: 0-3, Stokes IQUV: 0-49
+                                     // SC4: Stokes I: 0-1, Stokes IQUV: 0-24
   unsigned char reserved[7];
   unsigned long flags[3];
   unsigned char record[PAYLOADSIZE_MAX];
@@ -436,7 +436,7 @@ int main(int argc, char** argv) {
     switch (science_mode) {
       case 0:
         expected_marker_byte = 0xD0; // I with TAB
-        ntabs = 12;
+        ntabs = 9;
         sequence_length = 2;
         packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
         expected_payload = PAYLOADSIZE_STOKESI;
@@ -445,7 +445,7 @@ int main(int argc, char** argv) {
 
       case 1:
         expected_marker_byte = 0xD1; // IQUV with TAB
-        ntabs = 12;
+        ntabs = 9;
         sequence_length = 25;
         packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
         expected_payload = PAYLOADSIZE_STOKESIQUV;

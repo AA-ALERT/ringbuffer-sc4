@@ -146,7 +146,7 @@ int main(int argc , char *argv[]) {
           packet_size = PACKETSIZE_STOKESI;
           sequence_length = 2;
           marker_field = 0xD0;
-          ntabs = 12;
+          ntabs = 9;
           channel_delta = 1;
           break;
         case 1:
@@ -155,7 +155,7 @@ int main(int argc , char *argv[]) {
           packet_size = PACKETSIZE_STOKESIQUV;
           sequence_length = 25;
           marker_field = 0xD1;
-          ntabs = 12;
+          ntabs = 9;
           channel_delta = 4;
           break;
         case 2:
