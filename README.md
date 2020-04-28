@@ -10,8 +10,9 @@ Packages are read and processed in batches; additional performance tuning on the
 
 Requirements:
  * Cmake
- * Cuda 
  * Psrdada
+
+Note that psrdada could add an additional dependency on CUDA.
  
  Instructions:
  
@@ -37,6 +38,8 @@ Commandline arguments:
   * `-l logfile` Filename to use for logging.
 
 
-# Contact
+# Contributers
 
-j.attema@esciencecenter.nl
+Jisk Attema, Netherlands eScience Center
+Leon Oostrum, UvA
+Gijs Molenaar

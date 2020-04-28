@@ -1,6 +1,8 @@
 /**
- * Program to read from the port and write to the ringbuffer 
- * Author: Jisk Attema, based on code by Roy Smits
+ * fake data generation code; used for development and debugging
+ * Connect to a ringbuffer, and mark pages as 'filled'
+ *
+ * This whole code can probably be replaced by some psrdada tools
  *
  */
 // needed for GNU extension to recvfrom: recvmmsg, bswap
@@ -32,77 +34,6 @@ char *science_modes[] = {"I+TAB", "IQUV+TAB", "I+IAB", "IQUV+IAB"};
 
 // #define LOG(...) {fprintf(logio, __VA_ARGS__)}; 
 #define LOG(...) {fprintf(stdout, __VA_ARGS__); fprintf(runlog, __VA_ARGS__); fflush(stdout);}
-
-void generatePulsar(
-    // pulsar properties
-    const float DM,
-    const unsigned int period,      // period of the pulse in number of samples
-    const unsigned int width,       // width of the pules in number of samples
-    const int random,               // if true, randomize peak height and noise level
-
-    // signal properties
-    const float minFreq,
-    const float maxFreq,
-    const float bandwidth,
-    const int ntabs,                 // size of the tab dimension of the data array
-    const int nchannels,             // size of the channel dimension of data array
-    const int nsamples,              // the number of samples per channel in a batch (ie. time dimension)
-    const unsigned int paddedSize,   // actual size of the time dimension of data array, ie nsamples + padding
-    const unsigned int batch,        // batch number
-    unsigned char *data              // Byte array of size [ntabs][nchannels][paddedSize]
-) {
-
-  unsigned int channel;
-  unsigned int sample;
-  unsigned int internalSample;
-
-  // Set random number generator seed
-  srand(batch + 42);
- 
-  // Set background signal, either constant or random (ie. approximation of white noise
-  int tab;
-  for (tab = 0; tab < ntabs; tab++) {
-    for (channel = 0; channel < nchannels; channel++) {
-      for (sample = 0; sample < nsamples; sample++) {
-        data[tab * nchannels * paddedSize + channel * paddedSize + sample] = random ? rand() % 25 : 8;
-      }
-    }
-  }
-
-  // Generate the pulsar
-  float inverseHighFreq = 1.0f / (maxFreq * maxFreq);
-  float kDM = 4148.808f * DM;
-
-  for (channel = 0; channel < nchannels; channel++) {
-    float inverseFreq = 1.0f / ((minFreq + channel * bandwidth) * (minFreq + channel * bandwidth));
-    float delta = kDM * (inverseFreq - inverseHighFreq);
-
-    // Find the first pulse in this batch: first N batches contain floor(N x samples per batch / pulse period) pulses
-    int firstPulse = ((batch * nsamples) / period) + 1;
-    int lastPulse = ((batch+1) * nsamples / period);
-  
-    // Loop over the pulses in this batch
-    int pulse;
-    for (pulse = firstPulse; pulse <= lastPulse; pulse++) {
-      // fill in a pulse of specified width in tab 3
-      unsigned int i;
-      for (i = 0; i < width; i++) {
-        sample = pulse * period + delta; // TODO: check math for delta
-
-        if (sample + i >= (batch + 1)*nsamples) {
-          // dont write outside this batch
-          // NOTE: the part of the pulse that overlaps with the next batch is dropped, and lost completely.
-          //       It is *not* inserted at the beginning of the next batch
-          break;
-        } else {
-          // Write a pulse in tab 3
-          internalSample = (sample + i) % nsamples;
-          data[3 * nchannels * paddedSize + channel * paddedSize + internalSample] = random? rand() % 128 : 42;
-        }
-      }
-    }
-  }
-}
 
 /**
  * Print commandline optinos
@@ -357,37 +288,6 @@ int main(int argc, char** argv) {
 
     // slow down sending a bit
     usleep(UMSBATCH);
-
-    /*
-    // copy to ringbuffer
-    if ((science_mode & 1) == 0) {
-      // ring buffer contains matrix:
-      // [tab][channel][time]
-      // memcpy(
-      //   &buf[((packet->tab_index * NCHANNELS) + curr_channel) * padded_size + packet->sequence_number * expected_payload],
-      //   packet->record, expected_payload);
-      generatePulsar(
-        // pulsar properties
-        2,  // DM
-        50, // period of the pulse in number of samples
-        5,  // width of the pules in number of samples
-        0,  // if true, randomize peak height and noise level
- 
-        // signal properties
-        52.5,          // minFreq
-        7732.5,        // maxFreq
-        5,             // bandwidth
-        ntabs,         // size of the tab dimension of the data array
-        NCHANNELS,     // size of the channel dimension of data array
-        ntimes,        // the number of samples per channel in a batch (ie. time dimension)
-        padded_size,   // actual size of the time dimension of data array, ie nsamples + padding
-        batch,         // batch number
-        (unsigned char *) buf            // Byte array of size [ntabs][nchannels][paddedSize]
-      );
-    } else {
-      // stokes IQUV
-    }
-    */
   }
 
   // clean up and exit
