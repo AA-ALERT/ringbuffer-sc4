@@ -1,3 +1,8 @@
+/**
+ * fake data generation code; used for development and debugging
+ * send lots of data to a network port
+ *
+ */
 // http://beej.us/guide/bgnet/output/html/singlepage/bgnet.html#theory
 
 // needed for GNU extension to recvfrom: recvmmsg, bswap

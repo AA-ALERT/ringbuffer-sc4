@@ -50,6 +50,8 @@
  */
 
 #define NCHANNELS 1536
+#define PACKETRATESC3 12500 // SC3: records per 1.024s
+#define PACKETRATESC4 12500 // SC4: records per 1.024s
 
 #define SOCKBUFSIZE 67108864      // Buffer size of socket
 
@@ -438,7 +440,7 @@ int main(int argc, char** argv) {
         expected_marker_byte = 0xD0; // I with TAB
         ntabs = 9;
         sequence_length = 2;
-        packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
+        packets_per_sample = ntabs * NCHANNELS * PACKETRATESC3 * 1 / PAYLOADSIZE_STOKESI;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
         break;
@@ -447,16 +449,16 @@ int main(int argc, char** argv) {
         expected_marker_byte = 0xD1; // IQUV with TAB
         ntabs = 9;
         sequence_length = 25;
-        packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
+        packets_per_sample = ntabs * NCHANNELS * PACKETRATESC3 * 4 / PAYLOADSIZE_STOKESIQUV;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = ntabs * NCHANNELS * 12500 * 4;
+        required_size = ntabs * NCHANNELS * PACKETRATESC3 * 4;
         break;
 
       case 2:
         expected_marker_byte = 0xD2; // I with IAB
         ntabs = 1;
         sequence_length = 2;
-        packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
+        packets_per_sample = ntabs * NCHANNELS * PACKETRATESC3 * 1 / PAYLOADSIZE_STOKESI;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
         break;
@@ -465,9 +467,9 @@ int main(int argc, char** argv) {
         expected_marker_byte = 0xD3; // IQUV with IAB
         ntabs = 1;
         sequence_length = 25;
-        packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
+        packets_per_sample = ntabs * NCHANNELS * PACKETRATESC3 * 4 / PAYLOADSIZE_STOKESIQUV;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = ntabs * NCHANNELS * 12500 * 4;
+        required_size = ntabs * NCHANNELS * PACKETRATESC3 * 4;
         break;
 
       default:
@@ -481,7 +483,7 @@ int main(int argc, char** argv) {
         expected_marker_byte = 0xE0; // I with TAB
         ntabs = 12;
         sequence_length = 2;
-        packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
+        packets_per_sample = ntabs * NCHANNELS * PACKETRATESC4 * 1 / PAYLOADSIZE_STOKESI;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
         break;
@@ -490,16 +492,16 @@ int main(int argc, char** argv) {
         expected_marker_byte = 0xE1; // IQUV with TAB
         ntabs = 12;
         sequence_length = 25;
-        packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
+        packets_per_sample = ntabs * NCHANNELS * PACKETRATESC4 * 4 / PAYLOADSIZE_STOKESIQUV;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = ntabs * NCHANNELS * 12500 * 4;
+        required_size = ntabs * NCHANNELS * PACKETRATESC4 * 4;
         break;
 
       case 2:
         expected_marker_byte = 0xE2; // I with IAB
         ntabs = 1;
         sequence_length = 2;
-        packets_per_sample = ntabs * NCHANNELS * 12500 * 1 / 6250;
+        packets_per_sample = ntabs * NCHANNELS * PACKETRATESC4 * 1 / PAYLOADSIZE_STOKESI;
         expected_payload = PAYLOADSIZE_STOKESI;
         required_size = ntabs * NCHANNELS * padded_size;
         break;
@@ -508,9 +510,9 @@ int main(int argc, char** argv) {
         expected_marker_byte = 0xE3; // IQUV with IAB
         ntabs = 1;
         sequence_length = 25;
-        packets_per_sample = ntabs * NCHANNELS * 12500 * 4 / 8000;
+        packets_per_sample = ntabs * NCHANNELS * PACKETRATESC4 * 4 / PAYLOADSIZE_STOKESIQUV;
         expected_payload = PAYLOADSIZE_STOKESIQUV;
-        required_size = ntabs * NCHANNELS * 12500 * 4;
+        required_size = ntabs * NCHANNELS * PACKETRATESC4 * 4;
         break;
 
       default:
