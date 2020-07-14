@@ -1,5 +1,7 @@
 # ringbuffer-sc4
 
+[![DOI](https://zenodo.org/badge/136619572.svg)](https://zenodo.org/badge/latestdoi/136619572)
+
 This code is part of the realtime pipeline for the AA-ALERT project.
 Its purpose is to copy data from the network (UDP packets) into a ringbuffer (provided by the PSRdada package), and do some checking.
 See the technical documentation in the `doc` directory.
