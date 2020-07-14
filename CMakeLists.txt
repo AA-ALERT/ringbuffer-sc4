@@ -12,8 +12,8 @@ find_package (CUDA REQUIRED)
 set (CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/cmake)
 
 # expose some variables to the source code
-set (ringbuffer_VERSION_MAJOR 0)
-set (ringbuffer_VERSION_MINOR 1)
+set (ringbuffer_VERSION_MAJOR 1)
+set (ringbuffer_VERSION_MINOR 0)
 configure_file ("src/config.h.in" "${PROJECT_BINARY_DIR}/config.h")
 include_directories ("${PROJECT_BINARY_DIR}")
 
